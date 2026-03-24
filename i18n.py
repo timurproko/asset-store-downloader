@@ -4,7 +4,8 @@ STRINGS = {
     "title": "Unity Asset Store Downloader",
     "menu_1": "  1. Search assets",
     "menu_2": "  2. Download assets",
-    "choose": "Select [1/2]: ",
+    "menu_3": "  3. Extract assets",
+    "choose": "Select [1/2/3]: ",
     "enter_asset_id": "Enter asset ID: ",
     "enter_search_query": "Enter search (empty = show full list): ",
     "search_no_results": "No assets match your search.",
@@ -44,6 +45,12 @@ STRINGS = {
     "batch_fail": "  Batch {}/{} fetch failed: {}",
     "info_result": "\nDetails: {} (this run +{}, total {})",
     "ids_result": "ID file: {} (total {})",
+    "no_unitypackages": "No .unitypackage files in the download folder.",
+    "enter_extract_index": "Enter number to extract (Enter = cancel): ",
+    "invalid_extract_index": "Invalid number.",
+    "extract_done": "Extracted to: {}",
+    "extract_failed": "Extraction failed: {}",
+    "extractor_missing": 'Install: pip install unitypackage-extractor  (https://pypi.org/project/unitypackage-extractor/)',
 }
 
 

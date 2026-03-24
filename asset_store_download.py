@@ -758,6 +758,7 @@ def search_assets_by_query(config):
 
     raw = input(t("enter_search_query")).strip()
     if not raw:
+        print()
         list_assets_id_name()
         return
 
@@ -778,9 +779,11 @@ def search_assets_by_query(config):
 
     matched.sort(key=sort_key)
     if not matched:
+        print()
         print(t("search_no_results"))
         return
 
+    print()
     id_width = max(len(str(pid)) for pid in matched)
     for pid in matched:
         name = info_map[pid].get("name", "")
@@ -791,7 +794,6 @@ def download_single_by_id(config, asset_id_str):
     asset_id_str = asset_id_str.strip()
     if not asset_id_str.isdigit():
         print(t("invalid_asset_id"))
-        print()
         return
 
     download_dir, cache_dir = _prepare_download_environment(config)
@@ -822,6 +824,55 @@ def download_single_by_id(config, asset_id_str):
     with _print_lock:
         print(f"  [{status}] {asset_id} - {msg}")
     print(t("download_done").format(1 if ok else 0, 0 if ok else 1))
+
+
+def extract_assets_menu(config):
+    """List downloaded .unitypackage files by index; extract with unitypackage-extractor."""
+    try:
+        from unitypackage_extractor.extractor import extractPackage
+    except ImportError:
+        print(t("extractor_missing"))
+        return
+
+    print()
+    download_dir, _ = _prepare_download_environment(config)
+    download_dir = download_dir.resolve()
+    extract_root = download_dir.parent / "extracted"
+
+    packages = sorted(
+        download_dir.glob("*.unitypackage"),
+        key=lambda p: p.name.lower(),
+    )
+    if not packages:
+        print(t("no_unitypackages"))
+        return
+
+    w = len(str(len(packages)))
+    for i, p in enumerate(packages, start=1):
+        print(f"  {i:>{w}}  {p.name}")
+
+    print()
+    raw = input(t("enter_extract_index")).strip()
+    if raw == "":
+        return
+    if not raw.isdigit():
+        print(t("invalid_extract_index"))
+        return
+    n = int(raw)
+    if n < 1 or n > len(packages):
+        print(t("invalid_extract_index"))
+        return
+
+    package_path = packages[n - 1]
+    extract_root.mkdir(parents=True, exist_ok=True)
+    out_dir = extract_root / package_path.stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        extractPackage(str(package_path), outputPath=str(out_dir))
+        print()
+        print(t("extract_done").format(out_dir.resolve()))
+    except Exception as e:
+        print(t("extract_failed").format(e))
 
 
 # ──────────────────── Main flow ────────────────────
@@ -987,6 +1038,7 @@ def main():
         print("=" * 40)
         print(t("menu_1"))
         print(t("menu_2"))
+        print(t("menu_3"))
         print("=" * 40)
 
         choice = input(t("choose")).strip()
@@ -996,6 +1048,9 @@ def main():
             print()
         elif choice == "2":
             download_single_by_id(config, input(t("enter_asset_id")))
+            print()
+        elif choice == "3":
+            extract_assets_menu(config)
             print()
         else:
             print(t("invalid_choice"))
