@@ -10,7 +10,7 @@ from urllib.parse import unquote
 
 import requests
 
-from i18n import LANG_MAP, LANG_PROMPT, set_lang, t
+from i18n import t
 
 
 GRAPHQL_URL = "https://assetstore.unity.com/api/graphql/batch"
@@ -255,17 +255,6 @@ fragment reviews on Reviews {
 def load_config(path="config.json"):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def load_asset_ids(path="asset_ids.txt"):
-    ids = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            ids.append(line)
-    return ids
 
 
 def extract_csrf(cookie_str):
@@ -719,17 +708,10 @@ def _pre_check_downloads(asset_ids, download_dir, cache_dir, info_map):
     return skipped, pending
 
 
-def run_downloads(config, ids_path="asset_ids.txt"):
-    asset_ids = load_asset_ids(ids_path)
-    if not asset_ids:
-        print(t("no_valid_ids"))
-        return
-
+def _prepare_download_environment(config):
+    """Create download dir and .cache, migrate legacy dot-prefixed .meta files."""
     download_dir = Path(config.get("download_dir", "./downloads"))
     download_dir.mkdir(parents=True, exist_ok=True)
-    max_workers = config.get("max_workers", 3)
-
-    # Migrate old .meta files from download_dir to download_dir/.cache/
     cache_dir = download_dir / ".cache"
     cache_dir.mkdir(exist_ok=True)
     for old_meta in download_dir.glob(".*.meta"):
@@ -739,51 +721,62 @@ def run_downloads(config, ids_path="asset_ids.txt"):
             old_meta.rename(new_path)
         else:
             old_meta.unlink()
+    return download_dir, cache_dir
 
+
+def list_assets_id_name():
     info_map = load_info_map()
+    if not info_map:
+        print(t("no_asset_info"))
+        return
 
-    # Pre-check: skip already downloaded files without any network request
+    def sort_key(pid):
+        try:
+            return (0, int(pid))
+        except ValueError:
+            return (1, pid)
+
+    ids_sorted = sorted(info_map.keys(), key=sort_key)
+    id_width = max(len(str(pid)) for pid in ids_sorted)
+    for pid in ids_sorted:
+        name = info_map[pid].get("name", "")
+        print(f"  {pid:>{id_width}}  {name}")
+
+
+def download_single_by_id(config, asset_id_str):
+    asset_id_str = asset_id_str.strip()
+    if not asset_id_str.isdigit():
+        print(t("invalid_asset_id"))
+        return
+
+    download_dir, cache_dir = _prepare_download_environment(config)
+    info_map = load_info_map()
     skipped, pending_ids = _pre_check_downloads(
-        asset_ids, download_dir, cache_dir, info_map
+        [asset_id_str], download_dir, cache_dir, info_map
     )
-
-    total_known_size = sum(info_map.get(aid, {}).get("size", 0) for aid in asset_ids)
-    print(t("total_assets_threads").format(len(asset_ids), max_workers))
-    if total_known_size > 0:
-        print(t("known_size").format(len(info_map), format_size(total_known_size)))
     print(t("download_dir").format(download_dir.resolve()))
 
     if skipped:
-        print(t("skipped_local").format(len(skipped)))
-    if not pending_ids:
-        print(t("all_skipped"))
+        for aid, fname in skipped:
+            with _print_lock:
+                print(f"  [OK] {aid} - {t('exists_skip').format(fname)}")
         return
 
-    print(t("pending_download").format(len(pending_ids)))
+    if not pending_ids:
+        return
 
-    success, failed = len(skipped), 0
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(
-                download_asset,
-                aid,
-                config,
-                download_dir,
-                info_map.get(aid, {}).get("size", 0),
-            ): aid
-            for aid in pending_ids
-        }
-        for future in as_completed(futures):
-            asset_id, ok, msg = future.result()
-            status = "OK" if ok else "FAIL"
-            with _print_lock:
-                print(f"  [{status}] {asset_id} - {msg}")
-            if ok:
-                success += 1
-            else:
-                failed += 1
-
-    print(t("download_done").format(success, failed))
+    aid = pending_ids[0]
+    print(t("pending_download").format(1))
+    asset_id, ok, msg = download_asset(
+        aid,
+        config,
+        download_dir,
+        info_map.get(aid, {}).get("size", 0),
+    )
+    status = "OK" if ok else "FAIL"
+    with _print_lock:
+        print(f"  [{status}] {asset_id} - {msg}")
+    print(t("download_done").format(1 if ok else 0, 0 if ok else 1))
 
 
 # ──────────────────── Main flow ────────────────────
@@ -941,32 +934,58 @@ def run_fetch_list(config, detail_batch_size=100):
     return True
 
 
-def main():
-    lang_choice = input(LANG_PROMPT).strip()
-    set_lang(LANG_MAP.get(lang_choice, "en"))
+def wait_return_to_menu():
+    """Block until the user presses a key, then return (TTY only; else Enter)."""
+    print()
+    print(t("press_any_key"))
+    if not sys.stdin.isatty():
+        input()
+        return
+    if sys.platform == "win32":
+        import msvcrt
 
+        msvcrt.getch()
+        print()
+        return
+    try:
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except (ImportError, OSError, AttributeError):
+        input()
+    else:
+        print()
+
+
+def main():
     config = load_config()
 
-    print(t("title"))
-    print("=" * 40)
-    print(t("menu_1"))
-    print(t("menu_2"))
-    print(t("menu_3"))
-    print("=" * 40)
+    while True:
+        print(t("title"))
+        print("=" * 40)
+        print(t("menu_1"))
+        print(t("menu_2"))
+        print("=" * 40)
 
-    choice = input(t("choose")).strip()
+        choice = input(t("choose")).strip()
 
-    if choice == "1":
-        run_fetch_list(config)
-    elif choice == "2":
-        run_downloads(config)
-    elif choice == "3":
-        ok = run_fetch_list(config)
-        if ok:
-            print("\n")
-            run_downloads(config)
-    else:
-        print(t("invalid_choice"))
+        if choice == "1":
+            ok = run_fetch_list(config)
+            if ok:
+                print()
+                list_assets_id_name()
+            wait_return_to_menu()
+        elif choice == "2":
+            download_single_by_id(config, input(t("enter_asset_id")))
+        else:
+            print(t("invalid_choice"))
 
 
 if __name__ == "__main__":

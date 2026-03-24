@@ -1,38 +1,38 @@
-# Unity Asset Store 批量下载工具
+# Unity Asset Store Batch Downloader
 
-[ENGLISH](README_EN.md) | [日本語](README_JA.md) | [한국어](README_KO.md)
+Download purchased assets from the [Unity Asset Store](https://assetstore.unity.com). The app fetches your library list and product details, prints **ID and name** in the console (aligned columns), and can download a **`.unitypackage`** by numeric product ID. The interface is **English only**.
 
-批量下载你在 Unity Asset Store 购买的所有资源。
+## Features
 
-## 功能特性
+- **List assets** — Fetches your asset list and product details via the GraphQL API (paginated), writes JSONL files, then prints every asset **ID and name**.
+- **Download by ID** — Downloads one package into `download_dir` using the product ID (no prior fetch required if you already know the ID).
+- **Menu loop** — After **List assets**, you are prompted to **press any key** to return to the menu. **Download by ID** returns to the menu when the download step finishes. Exit with **Ctrl+C** (there is no quit item on the menu).
+- **Resume** — Interrupted downloads continue from the last byte (`.tmp` + `Range` requests).
+- **Progress** — Progress bar, speed, and ETA when size is known.
+- **Incremental fetch** — Re-running skips pages and product details already stored in JSONL files.
+- **Auto retry** — Server and network errors retry with backoff.
 
-- **获取资源列表** - 通过 GraphQL API 分页获取（每页 100 条）
-- **获取产品详情** - 名称、大小、版本、分类等完整信息
-- **批量下载** - 线程池并发下载 `.unitypackage` 文件
-- **断点续传** - 中断后重新运行自动从上次位置继续下载
-- **下载进度** - 实时显示进度条、速度、剩余时间
-- **增量获取** - 重启后自动跳过已获取的页面和详情
-- **自动重试** - 5xx 错误、超时、连接错误自动指数退避重试
-
-## 环境要求
+## Requirements
 
 ```bash
 pip install requests
 ```
 
-## 配置
+## Setup
 
-1. 复制示例配置文件：
+1. Copy the example config:
    ```bash
    cp config.json.example config.json
    ```
-2. 在浏览器中登录 [Unity Asset Store](https://assetstore.unity.com)
-3. 打开开发者工具（F12）> Network 标签 > 复制任意请求的 `Cookie` 请求头
-4. 将 Cookie 粘贴到 `config.json` 的 `cookie` 字段：
+2. Log in to the Asset Store in your browser.
+3. Open DevTools (F12) → **Network** → copy the `Cookie` header from any request to `assetstore.unity.com`.
+4. Paste it into `config.json`:
+
 ![](pics/cookie.png)
+
 ```json
 {
-  "cookie": "在此粘贴完整的cookie字符串",
+  "cookie": "your_cookie_string_here",
   "download_dir": "./downloads",
   "max_workers": 3,
   "retry": 3,
@@ -40,39 +40,47 @@ pip install requests
 }
 ```
 
-| 字段 | 说明 |
-|---|---|
-| `cookie` | 浏览器复制的完整 Cookie 字符串 |
-| `download_dir` | 下载保存目录 |
-| `max_workers` | 线程池并发数（建议 3，过大可能被限流） |
-| `retry` | 请求失败重试次数 |
-| `timeout` | 请求超时时间（秒） |
+| Field | Description |
+| --- | --- |
+| `cookie` | Full cookie string from the browser |
+| `download_dir` | Where `.unitypackage` files are saved |
+| `max_workers` | Parallelism for list/detail fetch (recommended: 3) |
+| `retry` | Retries per failed HTTP request |
+| `timeout` | Request timeout in seconds |
 
-## 使用方法
+## Usage
 
 ```bash
 python asset_store_download.py
 ```
 
-启动后显示菜单：
+You get a repeating menu:
 
-```
-1. 获取资源列表      - 获取列表 + 详情，写入 JSONL 文件
-2. 开始下载          - 根据 asset_ids.txt 下载 .unitypackage 文件
-3. 获取列表并下载    - 依次执行以上两步
-```
+| # | Action |
+| --- | --- |
+| **1** | **List assets** — Full fetch (list + details), then print IDs and names. Afterwards: *Press any key to return to menu…* |
+| **2** | **Download by ID** — Prompts for a product ID and downloads that `.unitypackage`. |
 
-## 输出文件
+Invalid input prints *Invalid choice* and shows the menu again.
 
-| 文件 | 说明 |
-|---|---|
-| `asset_list.jsonl` | 每行一条 JSON，每页的 `searchMyAssets` 数据，含 `page` 字段 |
-| `asset_info.jsonl` | 每行一条 JSON，产品详情对象 |
-| `asset_ids.txt` | 每行一个产品 ID，作为下载输入 |
-| `downloads/` | 下载的 `.unitypackage` 文件 |
+### Windows: `start.bat`
 
-## 断点续传机制
+[`start.bat`](start.bat) converts the project folder to a WSL path and runs:
 
-- **列表获取**：读取 `asset_list.jsonl`，检测缺失页码，仅获取缺失页
-- **详情获取**：读取 `asset_info.jsonl`，跳过已有产品 ID
-- **文件下载**：检测 `.tmp` 文件，发送 `Range` 请求头从上次字节位置继续
+`python3 asset_store_download.py`
+
+inside your default WSL distro. **WSL must be installed** (`wsl --status`). If Python or `requests` is missing inside WSL, install them there (the script prints a hint on failure). The window stays open at the end (`pause`).
+
+## Output files
+
+| File | Description |
+| --- | --- |
+| `asset_list.jsonl` | One JSON object per line: each page of `searchMyAssets` data (includes `page`) |
+| `asset_info.jsonl` | One JSON object per line: full product detail from the API |
+| `asset_ids.txt` | Product IDs appended during detail fetch (for your own reference) |
+| `downloads/` | Downloaded `.unitypackage` files (and `downloads/.cache/` for resume metadata) |
+
+## Resume behavior
+
+- **List / details**: Existing `asset_list.jsonl` / `asset_info.jsonl` rows are skipped; only missing pages or product IDs are fetched.
+- **Download**: Partial files use a `.tmp` suffix; the client sends `Range` to continue.

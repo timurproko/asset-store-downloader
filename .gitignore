@@ -1,1 +1,5 @@
+__pycache__
+downloads
 config.json
+asset*
+!asset_store_download.py
