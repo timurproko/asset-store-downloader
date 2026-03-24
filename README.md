@@ -1,17 +1,14 @@
 # Unity Asset Store Downloader
 
-Download purchased assets from the [Unity Asset Store](https://assetstore.unity.com). **Search** shows **ID and name** in the console (aligned columns), with optional filter or full list; **Download assets** saves **`.unitypackage`** files; **Extract assets** unpacks a downloaded package using [unitypackage-extractor](https://pypi.org/project/unitypackage-extractor/). The interface is **English only**.
+Download purchased assets from the [Unity Asset Store](https://assetstore.unity.com). English-only CLI with three actions: **Search** (IDs and names), **Download** (`.unitypackage` by product ID), and **Extract** (unpack a downloaded package).
 
 ## Features
 
-- **Search assets** — Enter a search string to show a **filtered** list (matches product name or ID substring, case-insensitive). **Press Enter** (empty query) to print the **full** list (**Enter = full list** in the prompt). If `asset_info.jsonl` is empty, the app **fetches your library** from the store first (same as the former “list” step), then prompts for search.
-- **Download assets** — Downloads one package into `download_dir` using the product ID (no prior fetch required if you already know the ID).
-- **Extract assets** — Lists `.unitypackage` files in `download_dir`, pick by **index**, unpacks to **`extracted/<package name>/`** beside `downloads/`. Uses the same `.unitypackage` format as [unitypackage-extractor](https://pypi.org/project/unitypackage-extractor/) (via `tarsafe`) with a **single progress line** (`N/total` and percent) instead of per-file logs.
-- **Menu loop** — After each action, the main menu is shown again. Exit with **Ctrl+C** (there is no quit item on the menu).
-- **Resume** — Interrupted downloads continue from the last byte (`.tmp` + `Range` requests).
-- **Progress** — Progress bar, speed, and ETA when size is known.
-- **Incremental fetch** — When the library is fetched, already stored pages and details in JSONL files are skipped.
-- **Auto retry** — Server and network errors retry with backoff.
+- **Search assets** — Filters rows from `asset_info.jsonl` by substring in the product **name** or **ID** (case-insensitive). **Enter = full list** (empty query lists everything). If there is no local detail data yet, the app runs a **full library fetch** (list + product details) first, then asks for the search string. Prompt: `Enter search query (Enter = full list):`
+- **Download assets** — Asks for a numeric **asset ID** and downloads one `.unitypackage` into `download_dir`. Shows `Download dir:`, then `Pending download:` plus the display filename (product name from `asset_info.jsonl` plus `.unitypackage`, or `{id}.unitypackage` if the name is missing), a one-line progress bar, and `Download complete: …`. Skips if the file is already present (`Exists, skipped: …`). Prompt: `Enter asset ID (Enter = cancel, . = open):` — **`.`** opens `download_dir` in the system file manager.  
+- **Extract assets** — Lists `*.unitypackage` files under `download_dir` with a numeric **index** (1…N). Extraction uses **`tarsafe`** to read the package (same on-disk format as the [unitypackage-extractor](https://pypi.org/project/unitypackage-extractor/) project) but implemented in-app: one **progress line** (`Extracting i/total (pct%)`) and a single result line `Extracted N file(s) to: <path>`. Output goes to **`extracted/<package-stem>/`** next to **`downloads/`** (sibling folders). Prompt: `Enter asset index (Enter = cancel, . = open):` — **`.`** opens the **`extracted/`** folder (next to `download_dir`). If there are no packages, you still get this prompt so you can open **`extracted/`**.
+- **Menu** — Repeats after each action. **Ctrl+C** exits; there is no separate “quit” command.
+- **Resume / retry** — Downloads can resume via `.tmp` files and `Range` requests; fetches skip existing JSONL rows; HTTP errors retry with backoff.
 
 ## Requirements
 
@@ -19,7 +16,7 @@ Download purchased assets from the [Unity Asset Store](https://assetstore.unity.
 pip install -r requirements.txt
 ```
 
-Installs `requests` and [`unitypackage-extractor`](https://pypi.org/project/unitypackage-extractor/) (only needed for **Extract assets**).
+Installs **`requests`** (API and downloads) and **`unitypackage-extractor`** as declared on PyPI (it pulls in **`tarsafe`**, which **Extract assets** imports). If extraction fails with a missing-module message, run the same install command inside your environment (e.g. WSL).
 
 ## Setup
 
@@ -28,7 +25,7 @@ Installs `requests` and [`unitypackage-extractor`](https://pypi.org/project/unit
    cp config.json.example config.json
    ```
 2. Log in to the Asset Store in your browser.
-3. Open DevTools (F12) → **Network** → copy the `Cookie` header from any request to `assetstore.unity.com`.
+3. Open DevTools (F12) → **Network** → copy the `Cookie` header from a request to `assetstore.unity.com`.
 4. Paste it into `config.json`:
 
 ![](pics/cookie.png)
@@ -46,10 +43,12 @@ Installs `requests` and [`unitypackage-extractor`](https://pypi.org/project/unit
 | Field | Description |
 | --- | --- |
 | `cookie` | Full cookie string from the browser |
-| `download_dir` | Where `.unitypackage` files are saved |
-| `max_workers` | Parallelism for list/detail fetch (recommended: 3) |
+| `download_dir` | Folder for `.unitypackage` files (default `./downloads`) |
+| `max_workers` | Parallel workers for list/detail fetch (typical: `3`) |
 | `retry` | Retries per failed HTTP request |
 | `timeout` | Request timeout in seconds |
+
+Paths are resolved from the current working directory unless you use an absolute `download_dir`.
 
 ## Usage
 
@@ -57,35 +56,29 @@ Installs `requests` and [`unitypackage-extractor`](https://pypi.org/project/unit
 python asset_store_download.py
 ```
 
-You get a repeating menu:
-
 | # | Action |
 | --- | --- |
-| **1** | **Search assets** — If needed, fetches library data, then prompts for a query; prints matching IDs and names (Enter = full list), then returns to the menu. |
-| **2** | **Download assets** — Prompts for a product ID and downloads that `.unitypackage`. |
-| **3** | **Extract assets** — Lists packages in `download_dir` with indices; enter an **asset index** to extract into `extracted/…` next to `downloads/` (Enter = cancel). |
+| **1** | **Search assets** — Fetch library data if needed, then `Enter search query (Enter = full list):` — matching IDs/names, or full list if you press Enter only. |
+| **2** | **Download assets** — `Enter asset ID (Enter = cancel, . = open):` — download one package, or **`.`** to open `download_dir`. |
+| **3** | **Extract assets** — List packages in `download_dir`, then `Enter asset index (Enter = cancel, . = open):` — unpack into `extracted/…`, or **`.`** to open the `extracted/` folder. |
 
-Invalid input prints *Invalid choice* and shows the menu again.
+Wrong menu choice shows `Invalid choice` (with a blank line before the menu repeats). For **Download assets**, `Enter` alone cancels; other non-numeric input (except **`.`**) returns to the menu without a message.
 
 ### Windows: `start.bat`
 
-[`start.bat`](start.bat) converts the project folder to a WSL path and runs:
+[`start.bat`](start.bat) resolves the repo path for **WSL** and runs `python3 asset_store_download.py`. WSL must be available (`wsl --status`). Install dependencies in that distro (`pip install -r requirements.txt`). The window stays open at the end (`pause`). If **`xdg-open`** is not installed, **`.`** (open folder) still works by launching **Windows Explorer** for the path (`wslpath` + `explorer.exe`); optional: `sudo apt install -y xdg-utils` for a Linux file manager.
 
-`python3 asset_store_download.py`
+## Output layout
 
-inside your default WSL distro. **WSL must be installed** (`wsl --status`). If Python or dependencies are missing inside WSL, run `pip install -r requirements.txt` there (the script prints a hint on failure). The window stays open at the end (`pause`).
-
-## Output files
-
-| File | Description |
+| Path | Role |
 | --- | --- |
-| `asset_list.jsonl` | One JSON object per line: each page of `searchMyAssets` data (includes `page`) |
-| `asset_info.jsonl` | One JSON object per line: full product detail from the API |
-| `asset_ids.txt` | Product IDs appended during detail fetch (for your own reference) |
-| `downloads/` | Downloaded `.unitypackage` files (and `downloads/.cache/` for resume metadata) |
-| `extracted/` | Next to `downloads/`: one subfolder per extracted package (same level as the `downloads` folder) |
+| `asset_list.jsonl` | Paginated `searchMyAssets` responses (with `page`) |
+| `asset_info.jsonl` | One product JSON per line (used for search) |
+| `asset_ids.txt` | IDs appended while details are fetched |
+| `<download_dir>/` | `.unitypackage` files and `<download_dir>/.cache/` (resume metadata) |
+| `<download_dir>/../extracted/<name>/` | Unpacked contents (same parent as `download_dir`; default layout: `downloads/` and `extracted/` side by side) |
 
 ## Resume behavior
 
-- **List / details**: Existing `asset_list.jsonl` / `asset_info.jsonl` rows are skipped; only missing pages or product IDs are fetched.
-- **Download**: Partial files use a `.tmp` suffix; the client sends `Range` to continue.
+- **Fetch**: Skips pages and product IDs already present in the JSONL files.
+- **Download**: Resumes partial `.tmp` downloads using `Range` when supported.

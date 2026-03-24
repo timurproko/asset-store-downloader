@@ -1,6 +1,8 @@
 import json
 import math
+import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -12,6 +14,7 @@ import requests
 
 from i18n import t
 
+# region Constants
 
 GRAPHQL_URL = "https://assetstore.unity.com/api/graphql/batch"
 DOWNLOAD_URL = "https://assetstore.unity.com/api/downloads"
@@ -248,9 +251,9 @@ fragment reviews on Reviews {
 }
 """
 
+# endregion
 
-# ──────────────────── Utility functions ────────────────────
-
+# region Library Fetch
 
 def load_config(path="config.json"):
     with open(path, "r", encoding="utf-8") as f:
@@ -273,11 +276,7 @@ def make_graphql_headers(config, operations):
     }
 
 
-# ──────────────────── Fetch list & details (write per page) ────────────────────
-
-
 def request_with_retry(method, url, retry, **kwargs):
-    """HTTP request with retry on 5xx / timeout / connection errors."""
     for attempt in range(1, retry + 1):
         try:
             resp = method(url, **kwargs)
@@ -353,7 +352,6 @@ def fetch_product_details(config, product_ids):
 
 
 def load_existing_list(list_path="asset_list.jsonl"):
-    """Load existing list JSONL, return {page: data} dict."""
     pages = {}
     try:
         with open(list_path, "r", encoding="utf-8") as f:
@@ -369,7 +367,6 @@ def load_existing_list(list_path="asset_list.jsonl"):
 
 
 def load_existing_detail_ids(info_path="asset_info.jsonl"):
-    """Load existing detail JSONL, return set of fetched product IDs."""
     ids = set()
     try:
         with open(info_path, "r", encoding="utf-8") as f:
@@ -387,7 +384,6 @@ def load_existing_detail_ids(info_path="asset_info.jsonl"):
 
 
 def append_list_page(page_num, page_data, f_list):
-    """Append one page of searchMyAssets data (with page field) to JSONL."""
     search_data = page_data[0]["data"]["searchMyAssets"]
     record = {**search_data, "page": page_num}
     f_list.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -395,7 +391,6 @@ def append_list_page(page_num, page_data, f_list):
 
 
 def append_detail_batch(details, f_info, f_ids, existing_ids):
-    """Append a batch of detail results to JSONL and IDs file, return count written."""
     count = 0
     for item in details:
         product = item.get("data", {}).get("product")
@@ -413,7 +408,6 @@ def append_detail_batch(details, f_info, f_ids, existing_ids):
 
 
 def extract_product_ids_from_list(existing_pages):
-    """Extract all product IDs from existing list data (preserving order)."""
     seen = set()
     result = []
     for page_num in sorted(existing_pages.keys()):
@@ -424,12 +418,11 @@ def extract_product_ids_from_list(existing_pages):
                 result.append(pid)
     return result
 
+# endregion
 
-# ──────────────────── Download ────────────────────
-
+# region Download
 
 def load_info_map(info_path="asset_info.jsonl"):
-    """Load {product_id: {name, size}} mapping from asset_info.jsonl."""
     info_map = {}
     try:
         with open(info_path, "r", encoding="utf-8") as f:
@@ -469,11 +462,10 @@ def format_eta(seconds):
     return f"{m:02d}:{s:02d}"
 
 
-# Thread-safe lock for progress printing
 _print_lock = threading.Lock()
 
 
-def print_progress(asset_id, filename, downloaded, total_size, speed, finished=False):
+def print_progress(downloaded, total_size, speed, finished=False):
     if total_size and total_size > 0:
         pct = min(downloaded / total_size * 100, 100)
         bar_len = 25
@@ -481,20 +473,18 @@ def print_progress(asset_id, filename, downloaded, total_size, speed, finished=F
         bar = "█" * filled + "░" * (bar_len - filled)
         eta = format_eta((total_size - downloaded) / speed) if speed > 0 else "--:--"
         status = (
-            f"  [{asset_id}] {filename}\n"
-            f"    {bar} {pct:5.1f}%  {format_size(downloaded)}/{format_size(total_size)}"
+            f"{bar} {pct:5.1f}%  {format_size(downloaded)}/{format_size(total_size)}"
             f"  {format_size(speed)}/s  ETA {eta}"
         )
     else:
-        status = (
-            f"  [{asset_id}] {filename}\n"
-            f"    {t('downloaded_no_total').format(format_size(downloaded), format_size(speed))}"
+        status = t("downloaded_no_total").format(
+            format_size(downloaded), format_size(speed)
         )
     with _print_lock:
         if finished:
             print(status)
         else:
-            print(status, end="\r\033[A\r", flush=True)
+            print(status, end="\r", flush=True)
 
 
 def parse_filename(response, asset_id):
@@ -525,7 +515,6 @@ def download_asset(asset_id, config, download_dir, total_size=0):
     cache_dir.mkdir(exist_ok=True)
     meta_path = cache_dir / f"{asset_id}.meta"
 
-    # Check cached meta first — skip download without any network request
     if meta_path.exists():
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         cached_filename = meta.get("filename", "")
@@ -540,7 +529,6 @@ def download_asset(asset_id, config, download_dir, total_size=0):
             resumed_bytes = 0
             req_headers = dict(headers)
 
-            # Check for partially downloaded .tmp file via cached meta
             if meta_path.exists():
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 cached_filename = meta.get("filename", "")
@@ -563,7 +551,6 @@ def download_asset(asset_id, config, download_dir, total_size=0):
             if resp.status_code == 404:
                 return asset_id, False, t("not_found")
 
-            # 416 Range Not Satisfiable — file already fully downloaded
             if resp.status_code == 416:
                 filename = parse_filename(resp, asset_id)
                 filepath = download_dir / filename
@@ -576,7 +563,6 @@ def download_asset(asset_id, config, download_dir, total_size=0):
             filename = parse_filename(resp, asset_id)
             filepath = download_dir / filename
 
-            # Save filename mapping to cache for resume / skip support
             meta_path.write_text(
                 json.dumps({"filename": filename}, ensure_ascii=False),
                 encoding="utf-8",
@@ -587,21 +573,17 @@ def download_asset(asset_id, config, download_dir, total_size=0):
 
             tmp_path = filepath.with_suffix(filepath.suffix + ".tmp")
 
-            # Check if this is a resumed (partial content) response
             is_resumed = resp.status_code == 206
             if is_resumed:
                 mode = "ab"
             else:
-                # Server doesn't support Range or returned full content, start from scratch
                 resumed_bytes = 0
                 mode = "wb"
 
-            # Determine total size: prefer known total_size, fallback to Content-Range/Content-Length
             effective_total = total_size
             if not effective_total:
                 content_range = resp.headers.get("Content-Range", "")
                 if content_range:
-                    # Content-Range: bytes 1000-9999/10000
                     m = re.search(r"/(\d+)", content_range)
                     if m:
                         effective_total = int(m.group(1))
@@ -619,16 +601,11 @@ def download_asset(asset_id, config, download_dir, total_size=0):
                     downloaded += len(chunk)
                     elapsed = time.time() - start_time
                     speed = (downloaded - resumed_bytes) / elapsed if elapsed > 0 else 0
-                    print_progress(
-                        asset_id, filename, downloaded, effective_total, speed
-                    )
+                    print_progress(downloaded, effective_total, speed)
 
-            # Final progress
             elapsed = time.time() - start_time
             speed = (downloaded - resumed_bytes) / elapsed if elapsed > 0 else 0
-            print_progress(
-                asset_id, filename, downloaded, effective_total, speed, finished=True
-            )
+            print_progress(downloaded, effective_total, speed, finished=True)
 
             tmp_path.rename(filepath)
 
@@ -652,7 +629,6 @@ def download_asset(asset_id, config, download_dir, total_size=0):
 
 
 def _build_local_file_index(download_dir):
-    """Build {lowercase_filename: Path} index of all .unitypackage files in download_dir."""
     index = {}
     for f in download_dir.glob("*.unitypackage"):
         index[f.name.lower()] = f
@@ -660,15 +636,6 @@ def _build_local_file_index(download_dir):
 
 
 def _pre_check_downloads(asset_ids, download_dir, cache_dir, info_map):
-    """Pre-check which assets are already downloaded locally, without any network request.
-
-    For each asset_id:
-      1. If .meta exists and the file exists (size verified) → skip
-      2. If no .meta, try to match a local file by product name from info_map → create .meta → skip
-      3. Otherwise → needs download
-
-    Returns (skipped: list[(id, filename)], pending: list[id]).
-    """
     local_files = _build_local_file_index(download_dir)
     skipped = []
     pending = []
@@ -677,7 +644,6 @@ def _pre_check_downloads(asset_ids, download_dir, cache_dir, info_map):
         meta_path = cache_dir / f"{aid}.meta"
         info = info_map.get(aid, {})
 
-        # 1) Check existing .meta cache — .meta + file exists = already downloaded
         if meta_path.exists():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
             cached_filename = meta.get("filename", "")
@@ -687,13 +653,11 @@ def _pre_check_downloads(asset_ids, download_dir, cache_dir, info_map):
                     skipped.append((aid, cached_filename))
                     continue
 
-        # 2) No .meta — try to match local file by product name
         product_name = info.get("name", "")
         if product_name:
             name_lower = product_name.lower()
             for fname_lower, fpath in local_files.items():
                 if name_lower in fname_lower:
-                    # Create .meta cache for future runs
                     meta_path.write_text(
                         json.dumps({"filename": fpath.name}, ensure_ascii=False),
                         encoding="utf-8",
@@ -708,14 +672,77 @@ def _pre_check_downloads(asset_ids, download_dir, cache_dir, info_map):
     return skipped, pending
 
 
+def _pending_display_filename(asset_id, info_map):
+    name = (info_map.get(asset_id, {}).get("name") or "").strip()
+    if name:
+        return f"{name}.unitypackage"
+    return f"{asset_id}.unitypackage"
+
+
+def _display_download_dir(path: Path) -> str:
+    path = path.resolve()
+    cwd = Path.cwd().resolve()
+    try:
+        rel = path.relative_to(cwd)
+        s = rel.as_posix()
+        if s == ".":
+            return path.as_posix()
+        return "/" + s
+    except ValueError:
+        return path.as_posix()
+
+
+def _is_wsl() -> bool:
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+    try:
+        with open("/proc/version", "r", encoding="utf-8") as f:
+            v = f.read().lower()
+        return "microsoft" in v or "wsl" in v
+    except OSError:
+        return False
+
+
+def _open_folder(path: Path) -> None:
+    path = Path(path).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    path_str = os.fspath(path)
+    if sys.platform == "win32":
+        os.startfile(path_str)
+        return
+    if sys.platform == "darwin":
+        subprocess.run(["open", path_str], check=False)
+        return
+
+    for opener in ("xdg-open", "wslview"):
+        try:
+            subprocess.run([opener, path_str], check=False)
+            return
+        except FileNotFoundError:
+            continue
+
+    if _is_wsl():
+        explorer = Path("/mnt/c/Windows/explorer.exe")
+        if explorer.is_file():
+            try:
+                win = subprocess.run(
+                    ["wslpath", "-w", path_str],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+                subprocess.run([str(explorer), win], check=False)
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                pass
+
+
 def _prepare_download_environment(config):
-    """Create download dir and .cache, migrate legacy dot-prefixed .meta files."""
     download_dir = Path(config.get("download_dir", "./downloads"))
     download_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = download_dir / ".cache"
     cache_dir.mkdir(exist_ok=True)
     for old_meta in download_dir.glob(".*.meta"):
-        new_name = old_meta.name[1:]  # strip leading dot
+        new_name = old_meta.name[1:]
         new_path = cache_dir / new_name
         if not new_path.exists():
             old_meta.rename(new_path)
@@ -744,7 +771,6 @@ def list_assets_id_name():
 
 
 def search_assets_by_query(config):
-    """Filter assets from asset_info.jsonl by substring in name or ID; empty query shows full list."""
     info_map = load_info_map()
     if not info_map:
         ok = run_fetch_list(config)
@@ -792,48 +818,44 @@ def search_assets_by_query(config):
 
 def download_single_by_id(config, asset_id_str):
     asset_id_str = asset_id_str.strip()
-    if not asset_id_str.isdigit():
-        print(t("invalid_asset_id"))
+    if not asset_id_str:
         return
+    if not asset_id_str.isdigit():
+        return
+
+    print()
 
     download_dir, cache_dir = _prepare_download_environment(config)
     info_map = load_info_map()
     skipped, pending_ids = _pre_check_downloads(
         [asset_id_str], download_dir, cache_dir, info_map
     )
-    print(t("download_dir").format(download_dir.resolve()))
+    print(t("download_dir").format(_display_download_dir(download_dir)))
 
     if skipped:
         for aid, fname in skipped:
             with _print_lock:
-                print(f"  [OK] {aid} - {t('exists_skip').format(fname)}")
+                print(t("exists_skip").format(fname))
         return
 
     if not pending_ids:
         return
 
     aid = pending_ids[0]
-    print(t("pending_download").format(1))
+    print(t("pending_download").format(_pending_display_filename(aid, info_map)))
     asset_id, ok, msg = download_asset(
         aid,
         config,
         download_dir,
         info_map.get(aid, {}).get("size", 0),
     )
-    status = "OK" if ok else "FAIL"
     with _print_lock:
-        print(f"  [{status}] {asset_id} - {msg}")
+        if not ok:
+            print(msg)
     print(t("download_done").format(1 if ok else 0, 0 if ok else 1))
 
 
 def _extract_unitypackage_with_progress(package_path, output_path, encoding="utf-8"):
-    """Extract a .unitypackage with a single-line progress counter.
-
-    Returns the number of files written, or 0 if nothing to extract.
-
-    Logic adapted from unitypackage_extractor (MIT, Cobertos):
-    https://github.com/Cobertos/unitypackage_extractor/blob/master/unitypackage_extractor/extractor.py
-    """
     import os
     import shutil
     import tempfile
@@ -886,7 +908,6 @@ def _extract_unitypackage_with_progress(package_path, output_path, encoding="utf
 
 
 def extract_assets_menu(config):
-    """List downloaded .unitypackage files by index; extract with tarsafe (unitypackage format)."""
     print()
     download_dir, _ = _prepare_download_environment(config)
     download_dir = download_dir.resolve()
@@ -898,15 +919,21 @@ def extract_assets_menu(config):
     )
     if not packages:
         print(t("no_unitypackages"))
-        return
 
-    w = len(str(len(packages)))
-    for i, p in enumerate(packages, start=1):
-        print(f"  {i:>{w}}  {p.name}")
+    else:
+        w = len(str(len(packages)))
+        for i, p in enumerate(packages, start=1):
+            print(f"  {i:>{w}}  {p.name}")
 
     print()
     raw = input(t("enter_extract_index")).strip()
     if raw == "":
+        return
+    if raw == ".":
+        _open_folder(extract_root)
+        return
+    if not packages:
+        print(t("invalid_extract_index"))
         return
     if not raw.isdigit():
         print(t("invalid_extract_index"))
@@ -930,19 +957,17 @@ def extract_assets_menu(config):
     except Exception as e:
         print(t("extract_failed").format(e))
 
+# endregion
 
-# ──────────────────── Main flow ────────────────────
-
+# region Main
 
 def _fetch_list_page_task(config, page, page_size):
-    """Thread pool task: fetch a single list page."""
     page_data = fetch_asset_list_page(config, page, page_size)
     search_data = page_data[0]["data"]["searchMyAssets"]
     return page, {**search_data, "page": page}
 
 
 def _fetch_detail_batch_task(config, batch, batch_num):
-    """Thread pool task: fetch a batch of product details."""
     details = fetch_product_details(config, batch)
     products = []
     for item in details:
@@ -960,7 +985,6 @@ def run_fetch_list(config, detail_batch_size=100):
     max_workers = config.get("max_workers", 3)
     _file_lock = threading.Lock()
 
-    # ── Phase 1 ──
     print("=" * 50)
     print(t("phase1"))
     print("=" * 50)
@@ -1016,7 +1040,6 @@ def run_fetch_list(config, detail_batch_size=100):
 
     print(t("list_complete").format(len(existing_pages)))
 
-    # ── Phase 2 ──
     print("\n" + "=" * 50)
     print(t("phase2"))
     print("=" * 50)
@@ -1103,7 +1126,12 @@ def main():
             search_assets_by_query(config)
             print()
         elif choice == "2":
-            download_single_by_id(config, input(t("enter_asset_id")))
+            raw = input(t("enter_asset_id")).strip()
+            if raw == ".":
+                download_dir, _ = _prepare_download_environment(config)
+                _open_folder(download_dir)
+            elif raw:
+                download_single_by_id(config, raw)
             print()
         elif choice == "3":
             extract_assets_menu(config)
@@ -1112,6 +1140,8 @@ def main():
             print(t("invalid_choice"))
             print()
 
+
+# endregion
 
 if __name__ == "__main__":
     main()
