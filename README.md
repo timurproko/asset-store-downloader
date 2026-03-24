@@ -4,9 +4,9 @@ Download purchased assets from the [Unity Asset Store](https://assetstore.unity.
 
 ## Features
 
-- **Search assets** — Enter a search string to show a **filtered** list (matches product name or ID substring, case-insensitive). **Leave the search empty** to print the **full** list. If `asset_info.jsonl` is empty, the app **fetches your library** from the store first (same as the former “list” step), then prompts for search.
+- **Search assets** — Enter a search string to show a **filtered** list (matches product name or ID substring, case-insensitive). **Press Enter** (empty query) to print the **full** list (**Enter = full list** in the prompt). If `asset_info.jsonl` is empty, the app **fetches your library** from the store first (same as the former “list” step), then prompts for search.
 - **Download assets** — Downloads one package into `download_dir` using the product ID (no prior fetch required if you already know the ID).
-- **Extract assets** — Lists `.unitypackage` files in `download_dir`, pick by **number**, contents go to **`extracted/<package name>/`** beside `downloads/` (same parent folder) via [unitypackage-extractor](https://pypi.org/project/unitypackage-extractor/).
+- **Extract assets** — Lists `.unitypackage` files in `download_dir`, pick by **index**, unpacks to **`extracted/<package name>/`** beside `downloads/`. Uses the same `.unitypackage` format as [unitypackage-extractor](https://pypi.org/project/unitypackage-extractor/) (via `tarsafe`) with a **single progress line** (`N/total` and percent) instead of per-file logs.
 - **Menu loop** — After each action, the main menu is shown again. Exit with **Ctrl+C** (there is no quit item on the menu).
 - **Resume** — Interrupted downloads continue from the last byte (`.tmp` + `Range` requests).
 - **Progress** — Progress bar, speed, and ETA when size is known.
@@ -61,9 +61,9 @@ You get a repeating menu:
 
 | # | Action |
 | --- | --- |
-| **1** | **Search assets** — If needed, fetches library data, then prompts for a query; prints matching IDs and names (empty input = full list), then returns to the menu. |
+| **1** | **Search assets** — If needed, fetches library data, then prompts for a query; prints matching IDs and names (Enter = full list), then returns to the menu. |
 | **2** | **Download assets** — Prompts for a product ID and downloads that `.unitypackage`. |
-| **3** | **Extract assets** — Lists packages in `download_dir` with numbers; enter a number to extract into `extracted/…` next to `downloads/` (Enter = cancel). |
+| **3** | **Extract assets** — Lists packages in `download_dir` with indices; enter an **asset index** to extract into `extracted/…` next to `downloads/` (Enter = cancel). |
 
 Invalid input prints *Invalid choice* and shows the menu again.
 

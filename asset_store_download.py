@@ -826,14 +826,67 @@ def download_single_by_id(config, asset_id_str):
     print(t("download_done").format(1 if ok else 0, 0 if ok else 1))
 
 
-def extract_assets_menu(config):
-    """List downloaded .unitypackage files by index; extract with unitypackage-extractor."""
-    try:
-        from unitypackage_extractor.extractor import extractPackage
-    except ImportError:
-        print(t("extractor_missing"))
-        return
+def _extract_unitypackage_with_progress(package_path, output_path, encoding="utf-8"):
+    """Extract a .unitypackage with a single-line progress counter.
 
+    Returns the number of files written, or 0 if nothing to extract.
+
+    Logic adapted from unitypackage_extractor (MIT, Cobertos):
+    https://github.com/Cobertos/unitypackage_extractor/blob/master/unitypackage_extractor/extractor.py
+    """
+    import os
+    import shutil
+    import tempfile
+
+    import tarsafe
+
+    output_path = str(Path(output_path).resolve())
+    package_path = str(package_path)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        with tarsafe.open(name=package_path, encoding=encoding) as upkg:
+            upkg.extractall(tmp_dir)
+
+        items = []
+        for dir_entry in os.scandir(tmp_dir):
+            asset_entry_dir = os.path.join(tmp_dir, dir_entry.name)
+            pathname_file = os.path.join(asset_entry_dir, "pathname")
+            asset_file = os.path.join(asset_entry_dir, "asset")
+            if not os.path.exists(pathname_file) or not os.path.exists(asset_file):
+                continue
+            with open(pathname_file, encoding=encoding) as f:
+                pathname = f.readline()
+            pathname = pathname[:-1] if pathname and pathname[-1] == "\n" else pathname
+            if os.name == "nt":
+                pathname = re.sub(r'[>:"|?*]', "_", pathname)
+            asset_out_path = os.path.join(output_path, pathname)
+            out_resolved = Path(output_path).resolve()
+            if out_resolved not in Path(asset_out_path).resolve().parents:
+                print(
+                    f"WARNING: Skipping '{dir_entry.name}' as '{asset_out_path}' is outside of '{output_path}'."
+                )
+                continue
+            items.append((asset_entry_dir, asset_out_path))
+
+        total = len(items)
+        if total == 0:
+            return 0
+
+        for i, (asset_entry_dir, asset_out_path) in enumerate(items, start=1):
+            pct = 100 * i // total
+            with _print_lock:
+                print(f"\rExtracting {i}/{total} ({pct}%) ...", end="", flush=True)
+            dest_dir = os.path.dirname(asset_out_path)
+            if dest_dir:
+                os.makedirs(dest_dir, exist_ok=True)
+            shutil.move(os.path.join(asset_entry_dir, "asset"), asset_out_path)
+        with _print_lock:
+            print()
+        return total
+
+
+def extract_assets_menu(config):
+    """List downloaded .unitypackage files by index; extract with tarsafe (unitypackage format)."""
     print()
     download_dir, _ = _prepare_download_environment(config)
     download_dir = download_dir.resolve()
@@ -867,10 +920,13 @@ def extract_assets_menu(config):
     extract_root.mkdir(parents=True, exist_ok=True)
     out_dir = extract_root / package_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
+    print()
     try:
-        extractPackage(str(package_path), outputPath=str(out_dir))
-        print()
-        print(t("extract_done").format(out_dir.resolve()))
+        count = _extract_unitypackage_with_progress(str(package_path), str(out_dir))
+        file_word = "file" if count == 1 else "files"
+        print(t("extract_done").format(count, file_word, out_dir.resolve()))
+    except ImportError:
+        print(t("extractor_missing"))
     except Exception as e:
         print(t("extract_failed").format(e))
 
