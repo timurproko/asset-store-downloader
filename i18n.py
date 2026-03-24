@@ -1,14 +1,15 @@
 """English UI strings."""
 
 STRINGS = {
-    "title": "Unity Asset Store Batch Downloader",
-    "menu_1": "  1. List assets",
-    "menu_2": "  2. Download by ID",
+    "title": "Unity Asset Store Downloader",
+    "menu_1": "  1. Search assets",
+    "menu_2": "  2. Download assets",
     "choose": "Select [1/2]: ",
-    "press_any_key": "Press any key to return to menu...",
     "enter_asset_id": "Enter asset ID: ",
+    "enter_search_query": "Enter search (empty = show full list): ",
+    "search_no_results": "No assets match your search.",
     "invalid_asset_id": "Invalid asset ID (use digits only)",
-    "no_asset_info": 'No asset details yet. Use option 1 first (or "asset_info.jsonl" is empty).',
+    "no_asset_info": 'No asset details in asset_info.jsonl. Check your cookie or try again.',
     "invalid_choice": "Invalid choice",
     "server_error": "    Server error({}), retrying in {}s (attempt {})...",
     "network_error": "    Network error, retrying in {}s (attempt {}): {}",

@@ -1,15 +1,15 @@
-# Unity Asset Store Batch Downloader
+# Unity Asset Store Downloader
 
-Download purchased assets from the [Unity Asset Store](https://assetstore.unity.com). The app fetches your library list and product details, prints **ID and name** in the console (aligned columns), and can download a **`.unitypackage`** by numeric product ID. The interface is **English only**.
+Download purchased assets from the [Unity Asset Store](https://assetstore.unity.com). **Search** shows **ID and name** in the console (aligned columns), with optional filter or full list; **Download assets** saves **`.unitypackage`** files. The interface is **English only**.
 
 ## Features
 
-- **List assets** — Fetches your asset list and product details via the GraphQL API (paginated), writes JSONL files, then prints every asset **ID and name**.
-- **Download by ID** — Downloads one package into `download_dir` using the product ID (no prior fetch required if you already know the ID).
-- **Menu loop** — After **List assets**, you are prompted to **press any key** to return to the menu. **Download by ID** returns to the menu when the download step finishes. Exit with **Ctrl+C** (there is no quit item on the menu).
+- **Search assets** — Enter a search string to show a **filtered** list (matches product name or ID substring, case-insensitive). **Leave the search empty** to print the **full** list. If `asset_info.jsonl` is empty, the app **fetches your library** from the store first (same as the former “list” step), then prompts for search.
+- **Download assets** — Downloads one package into `download_dir` using the product ID (no prior fetch required if you already know the ID).
+- **Menu loop** — After **Search assets** or **Download assets**, the main menu is shown again. Exit with **Ctrl+C** (there is no quit item on the menu).
 - **Resume** — Interrupted downloads continue from the last byte (`.tmp` + `Range` requests).
 - **Progress** — Progress bar, speed, and ETA when size is known.
-- **Incremental fetch** — Re-running skips pages and product details already stored in JSONL files.
+- **Incremental fetch** — When the library is fetched, already stored pages and details in JSONL files are skipped.
 - **Auto retry** — Server and network errors retry with backoff.
 
 ## Requirements
@@ -58,8 +58,8 @@ You get a repeating menu:
 
 | # | Action |
 | --- | --- |
-| **1** | **List assets** — Full fetch (list + details), then print IDs and names. Afterwards: *Press any key to return to menu…* |
-| **2** | **Download by ID** — Prompts for a product ID and downloads that `.unitypackage`. |
+| **1** | **Search assets** — If needed, fetches library data, then prompts for a query; prints matching IDs and names (empty input = full list), then returns to the menu. |
+| **2** | **Download assets** — Prompts for a product ID and downloads that `.unitypackage`. |
 
 Invalid input prints *Invalid choice* and shows the menu again.
 

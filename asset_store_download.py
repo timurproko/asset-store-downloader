@@ -743,10 +743,55 @@ def list_assets_id_name():
         print(f"  {pid:>{id_width}}  {name}")
 
 
+def search_assets_by_query(config):
+    """Filter assets from asset_info.jsonl by substring in name or ID; empty query shows full list."""
+    info_map = load_info_map()
+    if not info_map:
+        ok = run_fetch_list(config)
+        if not ok:
+            print(t("no_asset_info"))
+            return
+        info_map = load_info_map()
+        if not info_map:
+            print(t("no_asset_info"))
+            return
+
+    raw = input(t("enter_search_query")).strip()
+    if not raw:
+        list_assets_id_name()
+        return
+
+    needle = raw.lower()
+
+    def sort_key(pid):
+        try:
+            return (0, int(pid))
+        except ValueError:
+            return (1, pid)
+
+    matched = []
+    for pid, info in info_map.items():
+        name = (info.get("name") or "").lower()
+        pid_str = str(pid)
+        if needle in name or needle in pid_str.lower():
+            matched.append(pid)
+
+    matched.sort(key=sort_key)
+    if not matched:
+        print(t("search_no_results"))
+        return
+
+    id_width = max(len(str(pid)) for pid in matched)
+    for pid in matched:
+        name = info_map[pid].get("name", "")
+        print(f"  {pid:>{id_width}}  {name}")
+
+
 def download_single_by_id(config, asset_id_str):
     asset_id_str = asset_id_str.strip()
     if not asset_id_str.isdigit():
         print(t("invalid_asset_id"))
+        print()
         return
 
     download_dir, cache_dir = _prepare_download_environment(config)
@@ -934,36 +979,6 @@ def run_fetch_list(config, detail_batch_size=100):
     return True
 
 
-def wait_return_to_menu():
-    """Block until the user presses a key, then return (TTY only; else Enter)."""
-    print()
-    print(t("press_any_key"))
-    if not sys.stdin.isatty():
-        input()
-        return
-    if sys.platform == "win32":
-        import msvcrt
-
-        msvcrt.getch()
-        print()
-        return
-    try:
-        import termios
-        import tty
-
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            sys.stdin.read(1)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    except (ImportError, OSError, AttributeError):
-        input()
-    else:
-        print()
-
-
 def main():
     config = load_config()
 
@@ -977,15 +992,14 @@ def main():
         choice = input(t("choose")).strip()
 
         if choice == "1":
-            ok = run_fetch_list(config)
-            if ok:
-                print()
-                list_assets_id_name()
-            wait_return_to_menu()
+            search_assets_by_query(config)
+            print()
         elif choice == "2":
             download_single_by_id(config, input(t("enter_asset_id")))
+            print()
         else:
             print(t("invalid_choice"))
+            print()
 
 
 if __name__ == "__main__":
