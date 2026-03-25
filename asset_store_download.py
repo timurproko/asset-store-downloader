@@ -467,13 +467,15 @@ _print_lock = threading.Lock()
 
 def print_progress(downloaded, total_size, speed, finished=False):
     if total_size and total_size > 0:
-        pct = min(downloaded / total_size * 100, 100)
+        if finished and downloaded < total_size:
+            downloaded = total_size
+        pct = min(int(downloaded * 100 / total_size) if total_size else 0, 100)
         bar_len = 25
-        filled = int(bar_len * downloaded / total_size)
+        filled = int(bar_len * pct / 100)
         bar = "█" * filled + "░" * (bar_len - filled)
         eta = format_eta((total_size - downloaded) / speed) if speed > 0 else "--:--"
         status = (
-            f"{bar} {pct:5.1f}%  {format_size(downloaded)}/{format_size(total_size)}"
+            f"{bar} {pct:3d}%  {format_size(downloaded)}/{format_size(total_size)}"
             f"  {format_size(speed)}/s  ETA {eta}"
         )
     else:
@@ -737,7 +739,7 @@ def _open_folder(path: Path) -> None:
 
 
 def _prepare_download_environment(config):
-    download_dir = Path(config.get("download_dir", "./downloads"))
+    download_dir = Path(config.get("download_dir", "./downloaded"))
     download_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = download_dir / ".cache"
     cache_dir.mkdir(exist_ok=True)
@@ -896,8 +898,15 @@ def _extract_unitypackage_with_progress(package_path, output_path, encoding="utf
 
         for i, (asset_entry_dir, asset_out_path) in enumerate(items, start=1):
             pct = 100 * i // total
+            bar_len = 25
+            filled = int(bar_len * pct / 100)
+            bar = "█" * filled + "░" * (bar_len - filled)
             with _print_lock:
-                print(f"\rExtracting {i}/{total} ({pct}%) ...", end="", flush=True)
+                print(
+                    f"\r{bar} {pct:3d}%  {i}/{total} Files",
+                    end="",
+                    flush=True,
+                )
             dest_dir = os.path.dirname(asset_out_path)
             if dest_dir:
                 os.makedirs(dest_dir, exist_ok=True)
@@ -949,13 +958,16 @@ def extract_assets_menu(config):
     out_dir.mkdir(parents=True, exist_ok=True)
     print()
     try:
+        print(t("extraction_dir").format(_display_download_dir(extract_root)))
+        print(t("pending_download").format(package_path.name))
         count = _extract_unitypackage_with_progress(str(package_path), str(out_dir))
-        file_word = "file" if count == 1 else "files"
-        print(t("extract_done").format(count, file_word, out_dir.resolve()))
+        print(t("extract_complete").format(count, 0))
     except ImportError:
         print(t("extractor_missing"))
+        print(t("extract_complete").format(0, 1))
     except Exception as e:
         print(t("extract_failed").format(e))
+        print(t("extract_complete").format(0, 1))
 
 # endregion
 

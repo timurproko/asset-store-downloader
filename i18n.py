@@ -25,7 +25,7 @@ STRINGS = {
     "fail_retry": "Failed (retried {} times): {}",
     "unknown_error": "Unknown error",
     "download_dir": "Download dir: {}",
-    "pending_download": "Pending download: {}",
+    "pending_download": "Asset: {}",
     "download_done": "Download complete: {} success, {} failed",
     "phase1": "Phase 1: Fetch asset list",
     "existing_pages": "Found {} existing pages",
@@ -47,7 +47,8 @@ STRINGS = {
     "no_unitypackages": "No .unitypackage files in the download folder.",
     "enter_extract_index": "Enter asset index (Enter = cancel, . = open): ",
     "invalid_extract_index": "Invalid index.",
-    "extract_done": "Extracted {} {} to: {}",
+    "extraction_dir": "Extraction dir: {}",
+    "extract_complete": "Extracting complete: {} success, {} failed",
     "extract_failed": "Extraction failed: {}",
     "extractor_missing": 'Install: pip install unitypackage-extractor  (https://pypi.org/project/unitypackage-extractor/)',
 }
