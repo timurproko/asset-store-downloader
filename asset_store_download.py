@@ -499,10 +499,12 @@ def _safe_account_slug(name: str) -> str:
 def account_data_paths(config):
     config = normalize_config(config)
     slug = _safe_account_slug(str(config.get("active_account") or ""))
+    data_dir = Path("data")
+    data_dir.mkdir(parents=True, exist_ok=True)
     return (
-        f"asset_list.{slug}.jsonl",
-        f"asset_info.{slug}.jsonl",
-        f"asset_ids.{slug}.txt",
+        str(data_dir / f"asset_list.{slug}.jsonl"),
+        str(data_dir / f"asset_info.{slug}.jsonl"),
+        str(data_dir / f"asset_ids.{slug}.txt"),
     )
 
 
@@ -821,7 +823,7 @@ def _open_folder(path: Path) -> None:
 
 
 def _prepare_download_environment(config):
-    download_dir = Path(config.get("download_dir", "./downloaded"))
+    download_dir = Path(config.get("download_dir", "./downloads"))
     download_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = download_dir / ".cache"
     cache_dir.mkdir(exist_ok=True)
@@ -1007,7 +1009,7 @@ def extract_assets_menu(config):
     print()
     download_dir, _ = _prepare_download_environment(config)
     download_dir = download_dir.resolve()
-    extract_root = download_dir.parent / "extracted"
+    extract_root = download_dir.parent / "extracts"
 
     packages = sorted(
         download_dir.glob("*.unitypackage"),

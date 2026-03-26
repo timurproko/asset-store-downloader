@@ -1,6 +1,5 @@
 __pycache__
-downloaded
-extracted
+data
+downloads
+extracts
 config.json
-asset*
-!asset_store_download.py

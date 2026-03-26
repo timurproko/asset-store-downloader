@@ -3,14 +3,14 @@
     {
       "name": "Personal",
       "cookie": ""
-    }
+    },
     {
       "name": "Corporate",
       "cookie": ""
     }
   ],
   "active_account": "Personal",
-  "download_dir": "./downloaded",
+  "download_dir": "./downloads",
   "max_workers": 3,
   "retry": 3,
   "timeout": 300
