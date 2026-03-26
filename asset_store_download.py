@@ -553,6 +553,24 @@ def print_progress(downloaded, total_size, speed, finished=False):
             print(status, end="\r", flush=True)
 
 
+def _print_bar_progress(done, total, label, finished=False):
+    total = int(total or 0)
+    done = int(done or 0)
+    if total <= 0:
+        pct = 0
+    else:
+        pct = min(int(done * 100 / total), 100)
+    bar_len = 25
+    filled = int(bar_len * pct / 100)
+    bar = "█" * filled + "░" * (bar_len - filled)
+    with _print_lock:
+        status = f"{bar} {pct:3d}%  {done}/{total}"
+        if finished:
+            print(status)
+        else:
+            print(status, end="\r", flush=True)
+
+
 def parse_filename(response, asset_id):
     cd = response.headers.get("content-disposition", "")
     match = re.search(r'filename="(.+?)"', cd)
@@ -1064,29 +1082,34 @@ def run_fetch_list(config, detail_batch_size=100):
     max_workers = config.get("max_workers", 3)
     _file_lock = threading.Lock()
 
-    print("=" * 50)
-    print(t("phase1"))
-    print("=" * 50)
+    account_name = str(normalize_config(config).get("active_account") or "").strip() or "Account"
+    print()
+    print(t("fetching_assets").format(account_name))
+
+    # Single unified progress bar across both phases (pages + detail batches).
+    progress_done = 0
+    progress_total = 1  # will be updated once totals are known
+    _print_bar_progress(progress_done, progress_total, "", finished=False)
 
     existing_pages = load_existing_list(list_path)
-    if existing_pages:
-        print(t("existing_pages").format(len(existing_pages)))
 
     if 0 in existing_pages:
         total = existing_pages[0]["total"]
     else:
-        print(t("fetching_page0"))
         first_page = fetch_asset_list_page(config, 0, page_size)
         total = first_page[0]["data"]["searchMyAssets"]["total"]
         record = {**first_page[0]["data"]["searchMyAssets"], "page": 0}
         with open(list_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
         existing_pages[0] = record
-        print(t("page_written"))
 
     total_pages = math.ceil(total / page_size)
     missing_pages = [p for p in range(total_pages) if p not in existing_pages]
-    print(t("total_pages_missing").format(total, total_pages, len(missing_pages)))
+
+    # Phase 1 contributes total_pages units to the unified bar.
+    progress_done = len(existing_pages)
+    progress_total = max(total_pages, 1)
+    _print_bar_progress(progress_done, progress_total, "", finished=False)
 
     if missing_pages:
         with open(list_path, "a", encoding="utf-8") as f:
@@ -1103,36 +1126,29 @@ def run_fetch_list(config, detail_batch_size=100):
                             f.write(json.dumps(record, ensure_ascii=False) + "\n")
                             f.flush()
                             existing_pages[page_num] = record
-                        with _print_lock:
-                            print(t("page_ok").format(
-                                page_num, total_pages - 1, len(record.get("results", []))
-                            ))
+                        progress_done = len(existing_pages)
+                        _print_bar_progress(progress_done, progress_total, "", finished=False)
                     except requests.RequestException as e:
-                        with _print_lock:
-                            print(t("page_fail").format(page, e))
+                        _print_bar_progress(progress_done, progress_total, "", finished=False)
 
         still_missing = [p for p in range(total_pages) if p not in existing_pages]
         if still_missing:
+            _print_bar_progress(len(existing_pages), progress_total, "", finished=True)
+            print(t("fetch_complete").format(len(existing_pages), len(still_missing)))
             print(t("still_missing").format(len(still_missing), still_missing))
             print(t("rerun"))
             return False
 
-    print(t("list_complete").format(len(existing_pages)))
-
-    print("\n" + "=" * 50)
-    print(t("phase2"))
-    print("=" * 50)
+    # Phase 2: detail batches. Now we know total work = total_pages + total_batches.
 
     all_product_ids = extract_product_ids_from_list(existing_pages)
     already_fetched = load_existing_detail_ids(info_path)
     pending_ids = [pid for pid in all_product_ids if pid not in already_fetched]
 
-    print(t("detail_summary").format(
-        len(all_product_ids), len(already_fetched), len(pending_ids)
-    ))
-
     if not pending_ids:
-        print(t("detail_done"))
+        _print_bar_progress(progress_total, progress_total, "", finished=True)
+        print(t("fetch_complete").format(len(all_product_ids), 0))
+        print()
         return True
 
     existing_ids_in_file = set()
@@ -1152,6 +1168,10 @@ def run_fetch_list(config, detail_batch_size=100):
     total_batches = len(batches)
 
     info_count = 0
+    # Expand unified total to include detail work.
+    progress_total = total_pages + total_batches
+    progress_done = len(existing_pages)  # pages already done
+    _print_bar_progress(progress_done, progress_total, "", finished=False)
 
     with (
         open(info_path, "a", encoding="utf-8") as f_info,
@@ -1176,15 +1196,18 @@ def run_fetch_list(config, detail_batch_size=100):
                         f_info.flush()
                         f_ids.flush()
                     info_count += len(products)
-                    with _print_lock:
-                        print(t("batch_ok").format(batch_num, total_batches, len(products)))
+                    progress_done += 1
+                    _print_bar_progress(progress_done, progress_total, "", finished=False)
                 except requests.RequestException as e:
-                    with _print_lock:
-                        print(t("batch_fail").format(batch_num, total_batches, e))
+                    progress_done += 1
+                    _print_bar_progress(progress_done, progress_total, "", finished=False)
 
     final_detail_count = len(already_fetched) + info_count
-    print(t("info_result").format(info_path, info_count, final_detail_count))
-    print(t("ids_result").format(ids_path, len(existing_ids_in_file)))
+    _print_bar_progress(progress_total, progress_total, "", finished=True)
+    failed_details = len(pending_ids) - info_count
+    # Keep the completion line simple and aligned with UI request.
+    print(t("fetch_complete").format(final_detail_count, failed_details))
+    print()
     return True
 
 
