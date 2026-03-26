@@ -34,10 +34,9 @@ Installs **`requests`** (API and downloads) and **`unitypackage-extractor`** as 
 ```json
 {
   "accounts": [
-    { "name": "Personal", "cookie": "your_cookie_string_here" }
+    { "name": "Personal", "download_dir": "./downloads/personal", "cookie": "your_cookie_string_here" }
   ],
   "active_account": "Personal",
-  "download_dir": "./downloads",
   "max_workers": 3,
   "retry": 3,
   "timeout": 300
@@ -48,7 +47,7 @@ Installs **`requests`** (API and downloads) and **`unitypackage-extractor`** as 
 | --- | --- |
 | `accounts` | List of accounts (`name` + `cookie`) |
 | `active_account` | Which account name is currently active |
-| `download_dir` | Folder for `.unitypackage` files (default `./downloads`) |
+| `accounts[].download_dir` | Folder for `.unitypackage` files for that account (default `./downloads`) |
 | `max_workers` | Parallel workers for list/detail fetch (typical: `3`) |
 | `retry` | Retries per failed HTTP request |
 | `timeout` | Request timeout in seconds |

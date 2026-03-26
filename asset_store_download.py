@@ -268,6 +268,17 @@ def save_config(config, path="config.json"):
         f.write("\n")
 
 
+def save_active_account(active_account, path="config.json"):
+    with open(path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, dict):
+        raw = {}
+    raw["active_account"] = str(active_account or "").strip()
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
 def normalize_config(config):
     config = dict(config or {})
     accounts = config.get("accounts")
@@ -282,7 +293,11 @@ def normalize_config(config):
             continue
         name = str(acc.get("name") or "").strip() or f"Account {i}"
         cookie = str(acc.get("cookie") or "")
-        cleaned.append({"name": name, "cookie": cookie})
+        download_dir = acc.get("download_dir")
+        cleaned_acc = {"name": name, "cookie": cookie}
+        if isinstance(download_dir, str) and download_dir.strip():
+            cleaned_acc["download_dir"] = download_dir.strip()
+        cleaned.append(cleaned_acc)
     if not cleaned:
         cleaned = [{"name": "Account 1", "cookie": str(config.get("cookie") or "")}]
     config["accounts"] = cleaned
@@ -302,6 +317,15 @@ def get_active_cookie(config):
         if acc.get("name") == active:
             return acc.get("cookie") or ""
     return ""
+
+
+def get_active_account(config):
+    config = normalize_config(config)
+    active = config.get("active_account")
+    for acc in config.get("accounts", []):
+        if acc.get("name") == active:
+            return acc
+    return config.get("accounts", [{}])[0] if config.get("accounts") else {}
 
 
 def extract_csrf(cookie_str):
@@ -823,7 +847,10 @@ def _open_folder(path: Path) -> None:
 
 
 def _prepare_download_environment(config):
-    download_dir = Path(config.get("download_dir", "./downloads"))
+    acc = get_active_account(config)
+    download_dir = Path(
+        acc.get("download_dir") or config.get("download_dir", "./downloads")
+    )
     download_dir.mkdir(parents=True, exist_ok=True)
     cache_dir = download_dir / ".cache"
     cache_dir.mkdir(exist_ok=True)
@@ -1088,11 +1115,6 @@ def run_fetch_list(config, detail_batch_size=100):
     print()
     print(t("fetching_assets").format(account_name))
 
-    # Single unified progress bar across both phases (pages + detail batches).
-    progress_done = 0
-    progress_total = 1  # will be updated once totals are known
-    _print_bar_progress(progress_done, progress_total, "", finished=False)
-
     existing_pages = load_existing_list(list_path)
 
     if 0 in existing_pages:
@@ -1108,9 +1130,11 @@ def run_fetch_list(config, detail_batch_size=100):
     total_pages = math.ceil(total / page_size)
     missing_pages = [p for p in range(total_pages) if p not in existing_pages]
 
-    # Phase 1 contributes total_pages units to the unified bar.
+    # Single unified progress bar across both phases (pages + detail batches).
+    # We can estimate detail batches from the total item count (page 0).
+    est_total_batches = math.ceil(total / detail_batch_size) if total else 0
+    progress_total = max(total_pages + est_total_batches, 1)
     progress_done = len(existing_pages)
-    progress_total = max(total_pages, 1)
     _print_bar_progress(progress_done, progress_total, "", finished=False)
 
     if missing_pages:
@@ -1141,8 +1165,6 @@ def run_fetch_list(config, detail_batch_size=100):
             print(t("rerun"))
             return False
 
-    # Phase 2: detail batches. Now we know total work = total_pages + total_batches.
-
     all_product_ids = extract_product_ids_from_list(existing_pages)
     already_fetched = load_existing_detail_ids(info_path)
     pending_ids = [pid for pid in all_product_ids if pid not in already_fetched]
@@ -1170,9 +1192,9 @@ def run_fetch_list(config, detail_batch_size=100):
     total_batches = len(batches)
 
     info_count = 0
-    # Expand unified total to include detail work.
-    progress_total = total_pages + total_batches
-    progress_done = len(existing_pages)  # pages already done
+    # Add details progress on top of page progress.
+    # Keep the denominator stable based on the estimate from page 0 to avoid jumps.
+    progress_done = len(existing_pages)
     _print_bar_progress(progress_done, progress_total, "", finished=False)
 
     with (
@@ -1248,7 +1270,7 @@ def account_settings_menu(config, config_path="config.json"):
     selected_name = accounts[idx - 1].get("name", "")
     if selected_name and selected_name != active:
         config["active_account"] = selected_name
-        save_config(config, path=config_path)
+        save_active_account(selected_name, path=config_path)
     return normalize_config(config)
 
 

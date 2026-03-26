@@ -2,15 +2,16 @@
   "accounts": [
     {
       "name": "Personal",
+      "download_dir": "./downloads/personal",
       "cookie": ""
     },
     {
       "name": "Corporate",
+      "download_dir": "./downloads/corporate",
       "cookie": ""
     }
   ],
   "active_account": "Personal",
-  "download_dir": "./downloads",
   "max_workers": 3,
   "retry": 3,
   "timeout": 300
