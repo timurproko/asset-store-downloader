@@ -1,5 +1,15 @@
 {
-  "cookie": "",
+  "accounts": [
+    {
+      "name": "Personal",
+      "cookie": ""
+    }
+    {
+      "name": "Corporate",
+      "cookie": ""
+    }
+  ],
+  "active_account": "Personal",
   "download_dir": "./downloaded",
   "max_workers": 3,
   "retry": 3,

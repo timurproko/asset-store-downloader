@@ -2,10 +2,15 @@
 
 STRINGS = {
     "title": "Unity Asset Store Downloader",
+    "menu_0": "  0. Account Settings",
     "menu_1": "  1. Search assets",
     "menu_2": "  2. Download assets",
     "menu_3": "  3. Extract assets",
     "choose": "Select [1/2/3]: ",
+    "choose_multi": "Select [0/1/2/3]: ",
+    "account_settings_title": "Account Settings",
+    "account_choose": "Select account (Enter = back): ",
+    "invalid_account_choice": "Invalid choice",
     "enter_asset_id": "Enter asset ID (Enter = cancel, . = open): ",
     "enter_search_query": "Enter search query (Enter = full list): ",
     "search_no_results": "No assets match your search.",

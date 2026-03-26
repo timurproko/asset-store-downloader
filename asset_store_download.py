@@ -257,7 +257,51 @@ fragment reviews on Reviews {
 
 def load_config(path="config.json"):
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        config = json.load(f)
+    return normalize_config(config)
+
+
+def save_config(config, path="config.json"):
+    config = normalize_config(dict(config))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def normalize_config(config):
+    config = dict(config or {})
+    accounts = config.get("accounts")
+    if not isinstance(accounts, list) or len(accounts) == 0:
+        legacy_cookie = config.get("cookie", "")
+        accounts = [{"name": "Account 1", "cookie": legacy_cookie}]
+        config["accounts"] = accounts
+
+    cleaned = []
+    for i, acc in enumerate(accounts, start=1):
+        if not isinstance(acc, dict):
+            continue
+        name = str(acc.get("name") or "").strip() or f"Account {i}"
+        cookie = str(acc.get("cookie") or "")
+        cleaned.append({"name": name, "cookie": cookie})
+    if not cleaned:
+        cleaned = [{"name": "Account 1", "cookie": str(config.get("cookie") or "")}]
+    config["accounts"] = cleaned
+
+    active = str(config.get("active_account") or "").strip()
+    names = [a["name"] for a in cleaned]
+    if not active or active not in names:
+        config["active_account"] = names[0]
+
+    return config
+
+
+def get_active_cookie(config):
+    config = normalize_config(config)
+    active = config.get("active_account")
+    for acc in config.get("accounts", []):
+        if acc.get("name") == active:
+            return acc.get("cookie") or ""
+    return ""
 
 
 def extract_csrf(cookie_str):
@@ -266,11 +310,12 @@ def extract_csrf(cookie_str):
 
 
 def make_graphql_headers(config, operations):
-    csrf = extract_csrf(config["cookie"])
+    cookie = get_active_cookie(config)
+    csrf = extract_csrf(cookie)
     return {
         **COMMON_HEADERS,
         "content-type": "application/json;charset=UTF-8",
-        "cookie": config["cookie"],
+        "cookie": cookie,
         "x-csrf-token": csrf,
         "operations": operations,
     }
@@ -442,6 +487,25 @@ def load_info_map(info_path="asset_info.jsonl"):
     return info_map
 
 
+def _safe_account_slug(name: str) -> str:
+    s = (name or "").strip().lower()
+    if not s:
+        return "account"
+    s = re.sub(r"[^a-z0-9]+", "_", s)
+    s = s.strip("_")
+    return s or "account"
+
+
+def account_data_paths(config):
+    config = normalize_config(config)
+    slug = _safe_account_slug(str(config.get("active_account") or ""))
+    return (
+        f"asset_list.{slug}.jsonl",
+        f"asset_info.{slug}.jsonl",
+        f"asset_ids.{slug}.txt",
+    )
+
+
 def format_size(n):
     if n < 1024:
         return f"{n} B"
@@ -505,7 +569,7 @@ def download_asset(asset_id, config, download_dir, total_size=0):
     headers = {
         **COMMON_HEADERS,
         "accept": "*/*",
-        "cookie": config["cookie"],
+        "cookie": get_active_cookie(config),
         "accept-encoding": "gzip, deflate, br, zstd",
     }
     for key in ["content-type", "origin", "x-requested-with", "x-source", "dnt"]:
@@ -753,8 +817,11 @@ def _prepare_download_environment(config):
     return download_dir, cache_dir
 
 
-def list_assets_id_name():
-    info_map = load_info_map()
+def list_assets_id_name(config=None):
+    if config is None:
+        config = load_config()
+    _, info_path, _ = account_data_paths(config)
+    info_map = load_info_map(info_path)
     if not info_map:
         print(t("no_asset_info"))
         return
@@ -773,13 +840,14 @@ def list_assets_id_name():
 
 
 def search_assets_by_query(config):
-    info_map = load_info_map()
+    _, info_path, _ = account_data_paths(config)
+    info_map = load_info_map(info_path)
     if not info_map:
         ok = run_fetch_list(config)
         if not ok:
             print(t("no_asset_info"))
             return
-        info_map = load_info_map()
+        info_map = load_info_map(info_path)
         if not info_map:
             print(t("no_asset_info"))
             return
@@ -787,7 +855,7 @@ def search_assets_by_query(config):
     raw = input(t("enter_search_query")).strip()
     if not raw:
         print()
-        list_assets_id_name()
+        list_assets_id_name(config)
         return
 
     needle = raw.lower()
@@ -828,7 +896,8 @@ def download_single_by_id(config, asset_id_str):
     print()
 
     download_dir, cache_dir = _prepare_download_environment(config)
-    info_map = load_info_map()
+    _, info_path, _ = account_data_paths(config)
+    info_map = load_info_map(info_path)
     skipped, pending_ids = _pre_check_downloads(
         [asset_id_str], download_dir, cache_dir, info_map
     )
@@ -991,9 +1060,7 @@ def _fetch_detail_batch_task(config, batch, batch_num):
 
 def run_fetch_list(config, detail_batch_size=100):
     page_size = 100
-    list_path = "asset_list.jsonl"
-    info_path = "asset_info.jsonl"
-    ids_path = "asset_ids.txt"
+    list_path, info_path, ids_path = account_data_paths(config)
     max_workers = config.get("max_workers", 3)
     _file_lock = threading.Lock()
 
@@ -1121,20 +1188,68 @@ def run_fetch_list(config, detail_batch_size=100):
     return True
 
 
+def account_settings_menu(config, config_path="config.json"):
+    config = normalize_config(config)
+    accounts = config.get("accounts", [])
+    if len(accounts) < 2:
+        return config
+
+    print()
+    print(t("account_settings_title"))
+    print("=" * 40)
+
+    active = config.get("active_account")
+    w = len(str(len(accounts)))
+    for i, acc in enumerate(accounts, start=1):
+        name = acc.get("name", "")
+        tag = " (active)" if name == active else ""
+        print(f"  {i:>{w}}. {name}{tag}")
+
+    print()
+    raw = input(t("account_choose")).strip()
+    if raw == "":
+        return config
+    if not raw.isdigit():
+        print(t("invalid_account_choice"))
+        print()
+        return config
+
+    idx = int(raw)
+    if idx < 1 or idx > len(accounts):
+        print(t("invalid_account_choice"))
+        print()
+        return config
+
+    selected_name = accounts[idx - 1].get("name", "")
+    if selected_name and selected_name != active:
+        config["active_account"] = selected_name
+        save_config(config, path=config_path)
+    return normalize_config(config)
+
+
 def main():
-    config = load_config()
+    config_path = "config.json"
+    config = load_config(config_path)
 
     while True:
+        config = normalize_config(config)
+        accounts = config.get("accounts", [])
+        has_account_settings = len(accounts) >= 2
+
         print(t("title"))
         print("=" * 40)
+        if has_account_settings:
+            print(t("menu_0"))
         print(t("menu_1"))
         print(t("menu_2"))
         print(t("menu_3"))
         print("=" * 40)
 
-        choice = input(t("choose")).strip()
+        choice = input(t("choose_multi") if has_account_settings else t("choose")).strip()
 
-        if choice == "1":
+        if has_account_settings and choice == "0":
+            config = account_settings_menu(config, config_path=config_path)
+        elif choice == "1":
             search_assets_by_query(config)
             print()
         elif choice == "2":

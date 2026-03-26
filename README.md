@@ -32,7 +32,10 @@ Installs **`requests`** (API and downloads) and **`unitypackage-extractor`** as 
 
 ```json
 {
-  "cookie": "your_cookie_string_here",
+  "accounts": [
+    { "name": "Personal", "cookie": "your_cookie_string_here" }
+  ],
+  "active_account": "Personal",
   "download_dir": "./downloaded",
   "max_workers": 3,
   "retry": 3,
@@ -42,11 +45,18 @@ Installs **`requests`** (API and downloads) and **`unitypackage-extractor`** as 
 
 | Field | Description |
 | --- | --- |
-| `cookie` | Full cookie string from the browser |
+| `accounts` | List of accounts (`name` + `cookie`) |
+| `active_account` | Which account name is currently active |
 | `download_dir` | Folder for `.unitypackage` files (default `./downloaded`) |
 | `max_workers` | Parallel workers for list/detail fetch (typical: `3`) |
 | `retry` | Retries per failed HTTP request |
 | `timeout` | Request timeout in seconds |
+
+### Multiple accounts
+
+To add multiple cookies, add more entries to `accounts`. When there are 2+ accounts, the main menu shows **0. Account Settings** where you can switch the active account; the selection is saved back to `config.json`.
+
+Legacy configs that only have a top-level `cookie` field are still supported (treated as a single account).
 
 Paths are resolved from the current working directory unless you use an absolute `download_dir`.
 
