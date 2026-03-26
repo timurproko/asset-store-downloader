@@ -1276,10 +1276,9 @@ def account_settings_menu(config, config_path="config.json"):
 
 def main():
     config_path = "config.json"
-    config = load_config(config_path)
 
     while True:
-        config = normalize_config(config)
+        config = load_config(config_path)
         accounts = config.get("accounts", [])
         has_account_settings = len(accounts) >= 2
 
@@ -1293,6 +1292,9 @@ def main():
         print("=" * 40)
 
         choice = input(t("choose_multi") if has_account_settings else t("choose")).strip()
+
+        # Re-read config before executing actions so runtime edits are respected.
+        config = load_config(config_path)
 
         if has_account_settings and choice == "0":
             config = account_settings_menu(config, config_path=config_path)
