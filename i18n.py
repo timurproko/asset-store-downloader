@@ -12,7 +12,7 @@ STRINGS = {
     "account_choose": "Select account (Enter = back): ",
     "invalid_account_choice": "Invalid choice",
     "enter_asset_id": "Enter asset ID (Enter = cancel, . = open): ",
-    "enter_search_query": "Enter search query (Enter = full list): ",
+    "enter_search_query": "Enter search query (Enter = full list, . = fetch): ",
     "search_no_results": "No assets match your search.",
     "no_asset_info": 'No asset details in asset_info.jsonl. Check your cookie or try again.',
     "invalid_choice": "Invalid choice",

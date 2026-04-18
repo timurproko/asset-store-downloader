@@ -899,38 +899,46 @@ def search_assets_by_query(config):
             print(t("no_asset_info"))
             return
 
-    raw = input(t("enter_search_query")).strip()
-    if not raw:
-        print()
-        list_assets_id_name(config)
-        return
-
-    needle = raw.lower()
-
     def sort_key(pid):
         try:
             return (0, int(pid))
         except ValueError:
             return (1, pid)
 
-    matched = []
-    for pid, info in info_map.items():
-        name = (info.get("name") or "").lower()
-        pid_str = str(pid)
-        if needle in name or needle in pid_str.lower():
-            matched.append(pid)
+    while True:
+        raw = input(t("enter_search_query")).strip()
+        if raw == ".":
+            run_fetch_list(config)
+            info_map = load_info_map(info_path)
+            if not info_map:
+                print(t("no_asset_info"))
+            continue
+        if not raw:
+            print()
+            list_assets_id_name(config)
+            return
 
-    matched.sort(key=sort_key)
-    if not matched:
+        needle = raw.lower()
+
+        matched = []
+        for pid, info in info_map.items():
+            name = (info.get("name") or "").lower()
+            pid_str = str(pid)
+            if needle in name or needle in pid_str.lower():
+                matched.append(pid)
+
+        matched.sort(key=sort_key)
+        if not matched:
+            print()
+            print(t("search_no_results"))
+            return
+
         print()
-        print(t("search_no_results"))
+        id_width = max(len(str(pid)) for pid in matched)
+        for pid in matched:
+            name = info_map[pid].get("name", "")
+            print(f"  {pid:>{id_width}}  {name}")
         return
-
-    print()
-    id_width = max(len(str(pid)) for pid in matched)
-    for pid in matched:
-        name = info_map[pid].get("name", "")
-        print(f"  {pid:>{id_width}}  {name}")
 
 
 def download_single_by_id(config, asset_id_str):
