@@ -312,6 +312,10 @@ def render_dialog(title, content_lines=None, help_text="", width=72, truncate_co
 
 # region Library Fetch
 
+class CookieInvalidError(Exception):
+    pass
+
+
 def load_config(path="config.json"):
     with open(path, "r", encoding="utf-8") as f:
         config = json.load(f)
@@ -336,12 +340,20 @@ def save_active_account(active_account, path="config.json"):
         f.write("\n")
 
 
+def normalize_cookie_input(cookie):
+    cookie = str(cookie or "").strip()
+    # Allow pasting either the raw header value or the full browser header line.
+    if cookie.lower().startswith("cookie:"):
+        cookie = cookie.split(":", 1)[1].strip()
+    return " ".join(cookie.split())
+
+
 def save_active_account_cookie(config, cookie, path="config.json"):
     config = normalize_config(config)
     active = config.get("active_account")
     for acc in config.get("accounts", []):
         if acc.get("name") == active:
-            acc["cookie"] = str(cookie or "").strip()
+            acc["cookie"] = normalize_cookie_input(cookie)
             break
     save_config(config, path=path)
 
@@ -359,7 +371,7 @@ def normalize_config(config):
         if not isinstance(acc, dict):
             continue
         name = str(acc.get("name") or "").strip() or f"Account {i}"
-        cookie = str(acc.get("cookie") or "")
+        cookie = normalize_cookie_input(acc.get("cookie") or "")
         download_dir = acc.get("download_dir")
         cleaned_acc = {"name": name, "cookie": cookie}
         if isinstance(download_dir, str) and download_dir.strip():
@@ -396,8 +408,18 @@ def get_active_account(config):
 
 
 def extract_csrf(cookie_str):
-    match = re.search(r"_csrf=([^;]+)", cookie_str)
-    return match.group(1) if match else ""
+    cookie_str = str(cookie_str or "")
+    for name in (
+        "_csrf",
+        "__Host-next-auth.csrf-token",
+        "__Secure-next-auth.csrf-token",
+        "next-auth.csrf-token",
+    ):
+        match = re.search(rf"(?:^|;\s*){re.escape(name)}=([^;]+)", cookie_str)
+        if match:
+            value = unquote(match.group(1))
+            return value.split("|", 1)[0]
+    return ""
 
 
 def make_graphql_headers(config, operations):
@@ -416,6 +438,8 @@ def request_with_retry(method, url, retry, **kwargs):
     for attempt in range(1, retry + 1):
         try:
             resp = method(url, **kwargs)
+            if resp.status_code in (400, 401, 403) or (url == GRAPHQL_URL and resp.status_code >= 500):
+                raise CookieInvalidError(t("cookie_expired"))
             if resp.status_code >= 500 and attempt < retry:
                 wait = 2**attempt
                 print(t("server_error").format(resp.status_code, wait, attempt))
@@ -1076,6 +1100,19 @@ def _prepare_download_environment(config):
     return download_dir, cache_dir
 
 
+def _clean_display_name(name):
+    return re.sub(r"\s+", " ", str(name or "")).strip()
+
+
+def _truncate_text(text, max_width):
+    text = str(text)
+    if len(text) <= max_width:
+        return text
+    if max_width <= 1:
+        return "…"[:max_width]
+    return text[: max_width - 1].rstrip() + "…"
+
+
 def _asset_id_name_lines(info_map, asset_ids=None):
     def sort_key(pid):
         try:
@@ -1087,7 +1124,14 @@ def _asset_id_name_lines(info_map, asset_ids=None):
     if not ids_sorted:
         return []
     id_width = max(len(str(pid)) for pid in ids_sorted)
-    return [f"  {pid:>{id_width}}  {info_map[pid].get('name', '')}" for pid in ids_sorted]
+    # Keep asset names inside the dialog so long names/extra whitespace do not push the right border.
+    max_line_width = max(30, shutil.get_terminal_size((100, 30)).columns - 8)
+    name_width = max(10, max_line_width - id_width - 4)
+    lines = []
+    for pid in ids_sorted:
+        name = _truncate_text(_clean_display_name(info_map[pid].get("name", "")), name_width)
+        lines.append(f"  {pid:>{id_width}}  {name}")
+    return lines
 
 
 def list_assets_id_name(config=None):
@@ -1106,7 +1150,33 @@ def list_assets_id_name(config=None):
 def search_assets_by_query(config):
     clear_view()
     _, info_path, _ = account_data_paths(config)
-    ok = run_fetch_list(config, footer=t("enter_search_query").strip())
+    try:
+        ok = run_fetch_list(config, footer=t("enter_search_query").strip())
+    except CookieInvalidError:
+        clear_view()
+        render_dialog(
+            t("search_title"),
+            [t("cookie_expired"), t("cookie_invalid_help")],
+            t("press_enter_continue"),
+        )
+        return
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        clear_view()
+        render_dialog(
+            t("search_title"),
+            [f"{t('fetch_failed')}: HTTP {status}", t("fetch_failed_help")],
+            t("press_enter_continue"),
+        )
+        return
+    except requests.RequestException as e:
+        clear_view()
+        render_dialog(
+            t("search_title"),
+            [t("fetch_failed"), str(e)],
+            t("press_enter_continue"),
+        )
+        return
     info_map = load_info_map(info_path)
     if not ok and not info_map:
         print(t("no_asset_info"))
@@ -1545,9 +1615,9 @@ def account_settings_menu(config, config_path="config.json"):
             if cookie:
                 save_active_account_cookie(config, cookie, path=config_path)
                 config = load_config(config_path)
-                print(t("cookie_saved").format(active))
                 print()
-                input()
+                print(t("cookie_saved").format(active))
+                input(t("press_enter_continue_prompt"))
             continue
         if raw != "1":
             print(t("invalid_account_choice"))
