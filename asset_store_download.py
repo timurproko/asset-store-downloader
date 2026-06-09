@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import unquote
@@ -268,29 +269,56 @@ def clear_view():
     print("\033[2J\033[H", end="", flush=True)
 
 
+def _char_display_width(ch):
+    if unicodedata.combining(ch):
+        return 0
+    if unicodedata.category(ch)[0] == "C":
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1
+
+
+def _display_width(text):
+    return sum(_char_display_width(ch) for ch in str(text))
+
+
 def _fit_dialog_text(text, width):
     text = str(text)
-    if len(text) <= width:
-        return text.ljust(width)
+    if width <= 0:
+        return ""
+    current_width = _display_width(text)
+    if current_width <= width:
+        return text + (" " * (width - current_width))
     if width <= 1:
         return "…"[:width]
-    return text[: width - 1] + "…"
+
+    result = []
+    used = 0
+    target = width - 1
+    for ch in text:
+        ch_width = _char_display_width(ch)
+        if used + ch_width > target:
+            break
+        result.append(ch)
+        used += ch_width
+    return "".join(result).rstrip() + "…" + (" " * max(0, target - used))
 
 
 def render_dialog(title, content_lines=None, help_text="", width=72, truncate_content=True):
     content_lines = [str(line) for line in (content_lines or [])]
     help_text = str(help_text or "")
     terminal = shutil.get_terminal_size((100, 30))
-    max_width = max(30, terminal.columns)
+    # Keep one column clear so terminals do not auto-wrap the right border into
+    # a stray vertical line at the edge of the screen.
+    max_width = max(30, terminal.columns - 1)
     max_content_lines = max(1, terminal.lines - 6)
 
     if truncate_content and len(content_lines) > max_content_lines:
         hidden = len(content_lines) - max_content_lines + 1
         content_lines = content_lines[: max_content_lines - 1] + [f"… {hidden} more item(s); search to narrow results"]
 
-    width = max(width, len(title) + 6, len(help_text) + 6)
+    width = max(width, _display_width(title) + 6, _display_width(help_text) + 6)
     for line in content_lines:
-        width = max(width, len(line) + 6)
+        width = max(width, _display_width(line) + 6)
     width = min(width, max_width)
 
     inner = width - 2
@@ -1106,11 +1134,21 @@ def _clean_display_name(name):
 
 def _truncate_text(text, max_width):
     text = str(text)
-    if len(text) <= max_width:
+    if _display_width(text) <= max_width:
         return text
     if max_width <= 1:
         return "…"[:max_width]
-    return text[: max_width - 1].rstrip() + "…"
+
+    result = []
+    used = 0
+    target = max_width - 1
+    for ch in text:
+        ch_width = _char_display_width(ch)
+        if used + ch_width > target:
+            break
+        result.append(ch)
+        used += ch_width
+    return "".join(result).rstrip() + "…"
 
 
 def _asset_id_name_lines(info_map, asset_ids=None):
@@ -1125,13 +1163,23 @@ def _asset_id_name_lines(info_map, asset_ids=None):
         return []
     id_width = max(len(str(pid)) for pid in ids_sorted)
     # Keep asset names inside the dialog so long names/extra whitespace do not push the right border.
-    max_line_width = max(30, shutil.get_terminal_size((100, 30)).columns - 8)
+    max_line_width = max(30, shutil.get_terminal_size((100, 30)).columns - 9)
     name_width = max(10, max_line_width - id_width - 4)
     lines = []
     for pid in ids_sorted:
         name = _truncate_text(_clean_display_name(info_map[pid].get("name", "")), name_width)
         lines.append(f"  {pid:>{id_width}}  {name}")
     return lines
+
+
+def _render_asset_results(title, asset_lines):
+    # Long result lists scroll more cleanly without a boxed right border.
+    print(title)
+    print()
+    for line in asset_lines:
+        print(line)
+    print()
+    print(t("press_enter_continue"))
 
 
 def list_assets_id_name(config=None):
@@ -1189,12 +1237,7 @@ def search_assets_by_query(config):
     if not raw:
         clear_view()
         asset_lines = _asset_id_name_lines(info_map)
-        render_dialog(
-            f"Found {len(asset_lines)} assets",
-            asset_lines,
-            t("press_enter_continue"),
-            truncate_content=False,
-        )
+        _render_asset_results(f"Found {len(asset_lines)} assets", asset_lines)
         return
 
     needle = raw.lower()
@@ -1213,12 +1256,7 @@ def search_assets_by_query(config):
 
     clear_view()
     asset_lines = _asset_id_name_lines(info_map, matched)
-    render_dialog(
-        f"Found {len(asset_lines)} assets",
-        asset_lines,
-        t("press_enter_continue"),
-        truncate_content=False,
-    )
+    _render_asset_results(f"Found {len(asset_lines)} assets", asset_lines)
 
 
 def download_single_by_id(config, asset_id_str):
