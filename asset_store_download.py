@@ -2,6 +2,7 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -257,10 +258,54 @@ fragment reviews on Reviews {
 
 
 def clear_view():
-    if not sys.stdout.isatty():
-        return
-    command = "cls" if os.name == "nt" else "clear"
-    subprocess.run(command, shell=True, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # Always try to clear. Some Windows terminals report stdout as non-TTY,
+    # which made menus append like a feed instead of replacing the view.
+    if os.name == "nt":
+        os.system("cls")
+    else:
+        os.system("clear")
+    # ANSI fallback for modern terminals and Windows Terminal.
+    print("\033[2J\033[H", end="", flush=True)
+
+
+def _fit_dialog_text(text, width):
+    text = str(text)
+    if len(text) <= width:
+        return text.ljust(width)
+    if width <= 1:
+        return "…"[:width]
+    return text[: width - 1] + "…"
+
+
+def render_dialog(title, content_lines=None, help_text="", width=72, truncate_content=True):
+    content_lines = [str(line) for line in (content_lines or [])]
+    help_text = str(help_text or "")
+    terminal = shutil.get_terminal_size((100, 30))
+    max_width = max(30, terminal.columns)
+    max_content_lines = max(1, terminal.lines - 6)
+
+    if truncate_content and len(content_lines) > max_content_lines:
+        hidden = len(content_lines) - max_content_lines + 1
+        content_lines = content_lines[: max_content_lines - 1] + [f"… {hidden} more item(s); search to narrow results"]
+
+    width = max(width, len(title) + 6, len(help_text) + 6)
+    for line in content_lines:
+        width = max(width, len(line) + 6)
+    width = min(width, max_width)
+
+    inner = width - 2
+    text_width = inner - 1
+    print("╭" + "─" * inner + "╮")
+    print("│ " + _fit_dialog_text(title, text_width) + "│")
+    print("├" + "─" * inner + "┤")
+    if content_lines:
+        for line in content_lines:
+            print("│ " + _fit_dialog_text(line, text_width) + "│")
+    else:
+        print("│" + " " * inner + "│")
+    print("├" + "─" * inner + "┤")
+    print("│ " + _fit_dialog_text(help_text, text_width) + "│")
+    print("╰" + "─" * inner + "╯")
 
 
 # endregion
@@ -577,7 +622,7 @@ def format_eta(seconds):
 _print_lock = threading.Lock()
 
 
-def print_progress(downloaded, total_size, speed, finished=False):
+def _download_progress_line(downloaded, total_size, speed, finished=False):
     if total_size and total_size > 0:
         if finished and downloaded < total_size:
             downloaded = total_size
@@ -586,14 +631,15 @@ def print_progress(downloaded, total_size, speed, finished=False):
         filled = int(bar_len * pct / 100)
         bar = "█" * filled + "░" * (bar_len - filled)
         eta = format_eta((total_size - downloaded) / speed) if speed > 0 else "--:--"
-        status = (
+        return (
             f"{bar} {pct:3d}%  {format_size(downloaded)}/{format_size(total_size)}"
             f"  {format_size(speed)}/s  ETA {eta}"
         )
-    else:
-        status = t("downloaded_no_total").format(
-            format_size(downloaded), format_size(speed)
-        )
+    return t("downloaded_no_total").format(format_size(downloaded), format_size(speed))
+
+
+def print_progress(downloaded, total_size, speed, finished=False):
+    status = _download_progress_line(downloaded, total_size, speed, finished=finished)
     with _print_lock:
         if finished:
             print(status)
@@ -601,7 +647,25 @@ def print_progress(downloaded, total_size, speed, finished=False):
             print(status, end="\r", flush=True)
 
 
-def _print_bar_progress(done, total, label, finished=False):
+def _downloaded_size_from_message(message):
+    match = re.search(r"\(([^()]+)\)\s*$", str(message or ""))
+    return match.group(1) if match else "0 B"
+
+
+def render_download_progress(download_dir, asset_name, downloaded=0, total_size=0, speed=0, finished=False, message=""):
+    lines = [
+        t("download_dir").format(_display_download_dir(Path(download_dir))),
+        t("pending_download").format(asset_name),
+    ]
+    if message:
+        lines.append(message)
+    else:
+        lines.append(_download_progress_line(downloaded, total_size, speed, finished=finished))
+    clear_view()
+    render_dialog(t("download_title"), lines, t("press_enter_continue") if finished or message else "")
+
+
+def _bar_progress_line(done, total, unit=""):
     total = int(total or 0)
     done = int(done or 0)
     if total <= 0:
@@ -611,12 +675,40 @@ def _print_bar_progress(done, total, label, finished=False):
     bar_len = 25
     filled = int(bar_len * pct / 100)
     bar = "█" * filled + "░" * (bar_len - filled)
+    suffix = f" {unit}" if unit else ""
+    return f"{bar} {pct:3d}%  {done}/{total}{suffix}"
+
+
+def _print_bar_progress(done, total, label, finished=False):
     with _print_lock:
-        status = f"{bar} {pct:3d}%  {done}/{total}"
+        status = _bar_progress_line(done, total)
         if finished:
             print(status)
         else:
             print(status, end="\r", flush=True)
+
+
+def _render_fetch_progress(title, done, total, footer="", complete_text=""):
+    lines = [t("search_query_help"), _bar_progress_line(done, total)]
+    if complete_text:
+        lines.append(complete_text)
+    clear_view()
+    render_dialog(title, lines, footer)
+
+
+def render_extract_progress(extract_root, package_name, done=0, total=0, complete_text="", message=""):
+    lines = [
+        t("extraction_dir").format(_display_download_dir(Path(extract_root))),
+        t("pending_download").format(package_name),
+    ]
+    if message:
+        lines.append(message)
+    elif complete_text:
+        lines.append(complete_text)
+    else:
+        lines.append(_bar_progress_line(done, total, "Files"))
+    clear_view()
+    render_dialog(t("extract_title"), lines, t("press_enter_continue") if complete_text or message else "")
 
 
 def parse_filename(response, asset_id):
@@ -677,7 +769,7 @@ def _desired_filename_for_asset(asset_id, info_map):
     return safe_package_filename(info_map.get(asset_id, {}).get("name", ""), asset_id)
 
 
-def download_asset(asset_id, config, download_dir, total_size=0, desired_filename=None):
+def download_asset(asset_id, config, download_dir, total_size=0, desired_filename=None, progress_context=None):
     url = f"{DOWNLOAD_URL}/{asset_id}"
     headers = {
         **COMMON_HEADERS,
@@ -789,11 +881,33 @@ def download_asset(asset_id, config, download_dir, total_size=0, desired_filenam
                     downloaded += len(chunk)
                     elapsed = time.time() - start_time
                     speed = (downloaded - resumed_bytes) / elapsed if elapsed > 0 else 0
-                    print_progress(downloaded, effective_total, speed)
+                    if progress_context:
+                        now = time.time()
+                        if now - progress_context.get("last_render", 0) >= 0.15:
+                            progress_context["last_render"] = now
+                            render_download_progress(
+                                progress_context["download_dir"],
+                                progress_context["asset_name"],
+                                downloaded,
+                                effective_total,
+                                speed,
+                            )
+                    else:
+                        print_progress(downloaded, effective_total, speed)
 
             elapsed = time.time() - start_time
             speed = (downloaded - resumed_bytes) / elapsed if elapsed > 0 else 0
-            print_progress(downloaded, effective_total, speed, finished=True)
+            if progress_context:
+                render_download_progress(
+                    progress_context["download_dir"],
+                    progress_context["asset_name"],
+                    downloaded,
+                    effective_total,
+                    speed,
+                    finished=True,
+                )
+            else:
+                print_progress(downloaded, effective_total, speed, finished=True)
 
             tmp_path.rename(filepath)
 
@@ -962,6 +1076,20 @@ def _prepare_download_environment(config):
     return download_dir, cache_dir
 
 
+def _asset_id_name_lines(info_map, asset_ids=None):
+    def sort_key(pid):
+        try:
+            return (0, int(pid))
+        except ValueError:
+            return (1, pid)
+
+    ids_sorted = sorted(asset_ids if asset_ids is not None else info_map.keys(), key=sort_key)
+    if not ids_sorted:
+        return []
+    id_width = max(len(str(pid)) for pid in ids_sorted)
+    return [f"  {pid:>{id_width}}  {info_map[pid].get('name', '')}" for pid in ids_sorted]
+
+
 def list_assets_id_name(config=None):
     if config is None:
         config = load_config()
@@ -971,23 +1099,14 @@ def list_assets_id_name(config=None):
         print(t("no_asset_info"))
         return
 
-    def sort_key(pid):
-        try:
-            return (0, int(pid))
-        except ValueError:
-            return (1, pid)
-
-    ids_sorted = sorted(info_map.keys(), key=sort_key)
-    id_width = max(len(str(pid)) for pid in ids_sorted)
-    for pid in ids_sorted:
-        name = info_map[pid].get("name", "")
-        print(f"  {pid:>{id_width}}  {name}")
+    for line in _asset_id_name_lines(info_map):
+        print(line)
 
 
 def search_assets_by_query(config):
     clear_view()
     _, info_path, _ = account_data_paths(config)
-    ok = run_fetch_list(config)
+    ok = run_fetch_list(config, footer=t("enter_search_query").strip())
     info_map = load_info_map(info_path)
     if not ok and not info_map:
         print(t("no_asset_info"))
@@ -996,16 +1115,16 @@ def search_assets_by_query(config):
         print(t("no_asset_info"))
         return
 
-    def sort_key(pid):
-        try:
-            return (0, int(pid))
-        except ValueError:
-            return (1, pid)
-
-    raw = input(t("enter_search_query")).strip()
+    raw = input().strip()
     if not raw:
-        print()
-        list_assets_id_name(config)
+        clear_view()
+        asset_lines = _asset_id_name_lines(info_map)
+        render_dialog(
+            f"Found {len(asset_lines)} assets",
+            asset_lines,
+            t("press_enter_continue"),
+            truncate_content=False,
+        )
         return
 
     needle = raw.lower()
@@ -1017,17 +1136,19 @@ def search_assets_by_query(config):
         if needle in name or needle in pid_str.lower():
             matched.append(pid)
 
-    matched.sort(key=sort_key)
     if not matched:
-        print()
-        print(t("search_no_results"))
+        clear_view()
+        render_dialog("Found 0 assets", [t("search_no_results")], t("press_enter_continue"))
         return
 
-    print()
-    id_width = max(len(str(pid)) for pid in matched)
-    for pid in matched:
-        name = info_map[pid].get("name", "")
-        print(f"  {pid:>{id_width}}  {name}")
+    clear_view()
+    asset_lines = _asset_id_name_lines(info_map, matched)
+    render_dialog(
+        f"Found {len(asset_lines)} assets",
+        asset_lines,
+        t("press_enter_continue"),
+        truncate_content=False,
+    )
 
 
 def download_single_by_id(config, asset_id_str):
@@ -1037,20 +1158,15 @@ def download_single_by_id(config, asset_id_str):
     if not asset_id_str.isdigit():
         return
 
-    print()
-
     download_dir, cache_dir = _prepare_download_environment(config)
     _, info_path, _ = account_data_paths(config)
     info_map = load_info_map(info_path)
     skipped, pending_ids = _pre_check_downloads(
         [asset_id_str], download_dir, cache_dir, info_map
     )
-    print(t("download_dir").format(_display_download_dir(download_dir)))
-
     if skipped:
         for aid, fname in skipped:
-            with _print_lock:
-                print(t("exists_skip").format(fname))
+            render_download_progress(download_dir, fname, message=t("exists_skip").format(fname))
         return
 
     if not pending_ids:
@@ -1058,21 +1174,28 @@ def download_single_by_id(config, asset_id_str):
 
     aid = pending_ids[0]
     desired_filename = _pending_display_filename(aid, info_map)
-    print(t("pending_download").format(desired_filename))
+    render_download_progress(download_dir, desired_filename, 0, info_map.get(aid, {}).get("size", 0), 0)
     asset_id, ok, msg = download_asset(
         aid,
         config,
         download_dir,
         info_map.get(aid, {}).get("size", 0),
         desired_filename=desired_filename,
+        progress_context={
+            "download_dir": download_dir,
+            "asset_name": desired_filename,
+            "last_render": 0,
+        },
     )
-    with _print_lock:
-        if not ok:
-            print(msg)
-    print(t("download_done").format(1 if ok else 0, 0 if ok else 1))
+    downloaded_size = _downloaded_size_from_message(msg) if ok else "0 B"
+    render_download_progress(
+        download_dir,
+        desired_filename,
+        message=t("download_done").format(downloaded_size, 1 if ok else 0, 0 if ok else 1),
+    )
 
 
-def _extract_unitypackage_with_progress(package_path, output_path, encoding="utf-8"):
+def _extract_unitypackage_with_progress(package_path, output_path, encoding="utf-8", progress_context=None):
     import os
     import shutil
     import tempfile
@@ -1111,23 +1234,43 @@ def _extract_unitypackage_with_progress(package_path, output_path, encoding="utf
         if total == 0:
             return 0
 
+        if progress_context:
+            render_extract_progress(
+                progress_context["extract_root"],
+                progress_context["package_name"],
+                0,
+                total,
+            )
+
         for i, (asset_entry_dir, asset_out_path) in enumerate(items, start=1):
-            pct = 100 * i // total
-            bar_len = 25
-            filled = int(bar_len * pct / 100)
-            bar = "█" * filled + "░" * (bar_len - filled)
-            with _print_lock:
-                print(
-                    f"\r{bar} {pct:3d}%  {i}/{total} Files",
-                    end="",
-                    flush=True,
-                )
             dest_dir = os.path.dirname(asset_out_path)
             if dest_dir:
                 os.makedirs(dest_dir, exist_ok=True)
             shutil.move(os.path.join(asset_entry_dir, "asset"), asset_out_path)
-        with _print_lock:
-            print()
+            if progress_context:
+                now = time.time()
+                if i == total or now - progress_context.get("last_render", 0) >= 0.15:
+                    progress_context["last_render"] = now
+                    render_extract_progress(
+                        progress_context["extract_root"],
+                        progress_context["package_name"],
+                        i,
+                        total,
+                    )
+            else:
+                pct = 100 * i // total
+                bar_len = 25
+                filled = int(bar_len * pct / 100)
+                bar = "█" * filled + "░" * (bar_len - filled)
+                with _print_lock:
+                    print(
+                        f"\r{bar} {pct:3d}%  {i}/{total} Files",
+                        end="",
+                        flush=True,
+                    )
+        if not progress_context:
+            with _print_lock:
+                print()
         return total
 
 
@@ -1142,47 +1285,66 @@ def extract_assets_menu(config):
         key=lambda p: p.name.lower(),
     )
     if not packages:
-        print(t("no_unitypackages"))
-
+        content_lines = [t("no_unitypackages")]
     else:
         w = len(str(len(packages)))
-        for i, p in enumerate(packages, start=1):
-            print(f"  {i:>{w}}  {p.name}")
+        content_lines = [f"  {i:>{w}}. {p.name}" for i, p in enumerate(packages, start=1)]
 
-    print()
-    raw = input(t("enter_extract_index")).strip()
+    render_dialog(t("extract_title"), content_lines, t("enter_extract_index").strip())
+    raw = input().strip()
     if raw == "":
-        return
+        return False
     if raw == ".":
         _open_folder(extract_root)
-        return
+        return False
     if not packages:
         print(t("invalid_extract_index"))
-        return
+        return True
     if not raw.isdigit():
         print(t("invalid_extract_index"))
-        return
+        return True
     n = int(raw)
     if n < 1 or n > len(packages):
         print(t("invalid_extract_index"))
-        return
+        return True
 
     package_path = packages[n - 1]
     extract_root.mkdir(parents=True, exist_ok=True)
     out_dir = extract_root / package_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
-    print()
     try:
-        print(t("extraction_dir").format(_display_download_dir(extract_root)))
-        print(t("pending_download").format(package_path.name))
-        count = _extract_unitypackage_with_progress(str(package_path), str(out_dir))
-        print(t("extract_complete").format(count, 0))
+        render_extract_progress(extract_root, package_path.name, 0, 0)
+        count = _extract_unitypackage_with_progress(
+            str(package_path),
+            str(out_dir),
+            progress_context={
+                "extract_root": extract_root,
+                "package_name": package_path.name,
+                "last_render": 0,
+            },
+        )
+        render_extract_progress(
+            extract_root,
+            package_path.name,
+            count,
+            count,
+            complete_text=t("extract_complete").format(count, 0),
+        )
     except ImportError:
-        print(t("extractor_missing"))
-        print(t("extract_complete").format(0, 1))
+        render_extract_progress(
+            extract_root,
+            package_path.name,
+            message=t("extractor_missing"),
+            complete_text=t("extract_complete").format(0, 1),
+        )
     except Exception as e:
-        print(t("extract_failed").format(e))
-        print(t("extract_complete").format(0, 1))
+        render_extract_progress(
+            extract_root,
+            package_path.name,
+            message=t("extract_failed").format(e),
+            complete_text=t("extract_complete").format(0, 1),
+        )
+    return True
 
 # endregion
 
@@ -1204,15 +1366,13 @@ def _fetch_detail_batch_task(config, batch, batch_num):
     return batch_num, products
 
 
-def run_fetch_list(config, detail_batch_size=100):
+def run_fetch_list(config, detail_batch_size=100, footer=""):
     page_size = 100
     list_path, info_path, ids_path = account_data_paths(config)
     max_workers = config.get("max_workers", 3)
     _file_lock = threading.Lock()
 
-    account_name = str(normalize_config(config).get("active_account") or "").strip() or "Account"
-    print()
-    print(t("fetching_assets").format(account_name))
+    fetch_title = t("search_title")
 
     existing_pages = load_existing_list(list_path)
 
@@ -1234,7 +1394,7 @@ def run_fetch_list(config, detail_batch_size=100):
     est_total_batches = math.ceil(total / detail_batch_size) if total else 0
     progress_total = max(total_pages + est_total_batches, 1)
     progress_done = len(existing_pages)
-    _print_bar_progress(progress_done, progress_total, "", finished=False)
+    _render_fetch_progress(fetch_title, progress_done, progress_total, footer)
 
     if missing_pages:
         with open(list_path, "a", encoding="utf-8") as f:
@@ -1252,14 +1412,19 @@ def run_fetch_list(config, detail_batch_size=100):
                             f.flush()
                             existing_pages[page_num] = record
                         progress_done = len(existing_pages)
-                        _print_bar_progress(progress_done, progress_total, "", finished=False)
+                        _render_fetch_progress(fetch_title, progress_done, progress_total, footer)
                     except requests.RequestException as e:
-                        _print_bar_progress(progress_done, progress_total, "", finished=False)
+                        _render_fetch_progress(fetch_title, progress_done, progress_total, footer)
 
         still_missing = [p for p in range(total_pages) if p not in existing_pages]
         if still_missing:
-            _print_bar_progress(len(existing_pages), progress_total, "", finished=True)
-            print(t("fetch_complete").format(len(existing_pages), len(still_missing)))
+            _render_fetch_progress(
+                fetch_title,
+                len(existing_pages),
+                progress_total,
+                footer,
+                t("fetch_complete").format(len(existing_pages), len(still_missing)),
+            )
             print(t("still_missing").format(len(still_missing), still_missing))
             print(t("rerun"))
             return False
@@ -1269,9 +1434,13 @@ def run_fetch_list(config, detail_batch_size=100):
     pending_ids = [pid for pid in all_product_ids if pid not in already_fetched]
 
     if not pending_ids:
-        _print_bar_progress(progress_total, progress_total, "", finished=True)
-        print(t("fetch_complete").format(len(all_product_ids), 0))
-        print()
+        _render_fetch_progress(
+            fetch_title,
+            progress_total,
+            progress_total,
+            footer,
+            t("fetch_complete").format(len(all_product_ids), 0),
+        )
         return True
 
     existing_ids_in_file = set()
@@ -1294,7 +1463,7 @@ def run_fetch_list(config, detail_batch_size=100):
     # Add details progress on top of page progress.
     # Keep the denominator stable based on the estimate from page 0 to avoid jumps.
     progress_done = len(existing_pages)
-    _print_bar_progress(progress_done, progress_total, "", finished=False)
+    _render_fetch_progress(fetch_title, progress_done, progress_total, footer)
 
     with (
         open(info_path, "a", encoding="utf-8") as f_info,
@@ -1320,17 +1489,21 @@ def run_fetch_list(config, detail_batch_size=100):
                         f_ids.flush()
                     info_count += len(products)
                     progress_done += 1
-                    _print_bar_progress(progress_done, progress_total, "", finished=False)
+                    _render_fetch_progress(fetch_title, progress_done, progress_total, footer)
                 except requests.RequestException as e:
                     progress_done += 1
-                    _print_bar_progress(progress_done, progress_total, "", finished=False)
+                    _render_fetch_progress(fetch_title, progress_done, progress_total, footer)
 
     final_detail_count = len(already_fetched) + info_count
-    _print_bar_progress(progress_total, progress_total, "", finished=True)
     failed_details = len(pending_ids) - info_count
     # Keep the completion line simple and aligned with UI request.
-    print(t("fetch_complete").format(final_detail_count, failed_details))
-    print()
+    _render_fetch_progress(
+        fetch_title,
+        progress_total,
+        progress_total,
+        footer,
+        t("fetch_complete").format(final_detail_count, failed_details),
+    )
     return True
 
 
@@ -1343,33 +1516,43 @@ def account_settings_menu(config, config_path="config.json"):
         active = config.get("active_account")
 
         clear_view()
-        print(t("account_settings_title"))
-        print("=" * 40)
-        print(t("active_account").format(active))
         switch_label = t("account_switch")
         if len(accounts) > 1:
             switch_label = f"{switch_label} ({active})"
-        print(switch_label)
-        print(t("account_enter_cookie"))
-        print()
-
-        raw = input(t("account_settings_choose")).strip()
+        render_dialog(
+            t("account_settings_title"),
+            [
+                switch_label,
+                t("account_enter_cookie"),
+            ],
+            t("account_settings_choose").strip(),
+        )
+        raw = input().strip()
         if raw == "":
             return config
         if raw == "2":
             clear_view()
-            cookie = input(t("enter_cookie").format(active)).strip()
+            render_dialog(
+                t("enter_cookie_title").format(active),
+                [
+                    t("enter_cookie_help_1"),
+                    t("enter_cookie_help_2"),
+                    t("enter_cookie_help_3"),
+                ],
+                t("enter_cookie").strip(),
+            )
+            cookie = input().strip()
             if cookie:
                 save_active_account_cookie(config, cookie, path=config_path)
                 config = load_config(config_path)
                 print(t("cookie_saved").format(active))
                 print()
-                input(t("press_enter_continue"))
+                input()
             continue
         if raw != "1":
             print(t("invalid_account_choice"))
             print()
-            input(t("press_enter_continue"))
+            input()
             continue
 
         while True:
@@ -1378,29 +1561,28 @@ def account_settings_menu(config, config_path="config.json"):
             active = config.get("active_account")
 
             clear_view()
-            print(t("switch_account_title"))
-            print("=" * 40)
             w = len(str(len(accounts)))
+            account_lines = []
             for i, acc in enumerate(accounts, start=1):
                 name = acc.get("name", "")
                 tag = " (active)" if name == active else ""
-                print(f"  {i:>{w}}. {name}{tag}")
+                account_lines.append(f"  {i:>{w}}. {name}{tag}")
 
-            print()
-            raw = input(t("account_choose")).strip()
+            render_dialog(t("switch_account_title"), account_lines, t("account_choose").strip())
+            raw = input().strip()
             if raw == "":
                 break
             if not raw.isdigit():
                 print(t("invalid_account_choice"))
                 print()
-                input(t("press_enter_continue"))
+                input()
                 continue
 
             idx = int(raw)
             if idx < 1 or idx > len(accounts):
                 print(t("invalid_account_choice"))
                 print()
-                input(t("press_enter_continue"))
+                input()
                 continue
 
             selected_name = accounts[idx - 1].get("name", "")
@@ -1420,16 +1602,12 @@ def main():
         has_account_settings = len(accounts) >= 1
 
         clear_view()
-        print(t("title"))
-        print("=" * 40)
+        menu_lines = []
         if has_account_settings:
-            print(t("menu_0"))
-        print(t("menu_1"))
-        print(t("menu_2"))
-        print(t("menu_3"))
-        print("=" * 40)
-
-        choice = input(t("choose_multi") if has_account_settings else t("choose")).strip()
+            menu_lines.append(t("menu_0"))
+        menu_lines.extend([t("menu_1"), t("menu_2"), t("menu_3")])
+        render_dialog(t("title"), menu_lines, (t("choose_multi") if has_account_settings else t("choose")).strip())
+        choice = input().strip()
 
         # Re-read config before executing actions so runtime edits are respected.
         config = load_config(config_path)
@@ -1438,22 +1616,35 @@ def main():
             config = account_settings_menu(config, config_path=config_path)
         elif choice == ("2" if has_account_settings else "1"):
             search_assets_by_query(config)
-            print()
+            input()
         elif choice == ("3" if has_account_settings else "2"):
             clear_view()
-            raw = input(t("enter_asset_id")).strip()
+            download_dir, _ = _prepare_download_environment(config)
+            render_dialog(
+                t("download_title"),
+                [
+                    t("download_dir").format(_display_download_dir(download_dir)),
+                    t("download_description"),
+                ],
+                t("enter_asset_id").strip(),
+            )
+            raw = input().strip()
             if raw == ".":
-                download_dir, _ = _prepare_download_environment(config)
                 _open_folder(download_dir)
             elif raw:
                 download_single_by_id(config, raw)
-            print()
+            if raw:
+                print()
+                input()
         elif choice == ("4" if has_account_settings else "3"):
-            extract_assets_menu(config)
-            print()
+            should_pause = extract_assets_menu(config)
+            if should_pause:
+                print()
+                input()
         else:
             print(t("invalid_choice"))
             print()
+            input()
 
 
 # endregion
