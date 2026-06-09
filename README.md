@@ -1,13 +1,14 @@
-# Unity Asset Store Downloader
+# Unity asset store downloader
 
-Download purchased assets from the [Unity Asset Store](https://assetstore.unity.com). English-only CLI with three actions: **Search** (IDs and names), **Download** (`.unitypackage` by product ID), and **Extract** (unpack a downloaded package).
+Download purchased assets from the [Unity Asset Store](https://assetstore.unity.com). English-only CLI with account settings plus three actions: **Search** (IDs and names), **Download** (`.unitypackage` by product ID), and **Extract** (unpack a downloaded package).
 
 ## Features
 
-- **Search assets** — Filters rows from `asset_info.jsonl` by substring in the product **name** or **ID** (case-insensitive). **Enter = full list** (empty query lists everything). If there is no local detail data yet, the app runs a **full library fetch** (list + product details) first, then asks for the search string. Prompt: `Enter search query (Enter = full list):`
+- **Search assets** — Automatically fetches the latest library data first, then filters rows from `asset_info.jsonl` by substring in the product **name** or **ID** (case-insensitive). **Enter = full list** (empty query lists everything). Prompt: `Enter search query (Enter = full list):`
 - **Download assets** — Asks for a numeric **asset ID** and downloads one `.unitypackage` into `download_dir`. Shows `Download dir:`, then `Asset:` plus the display filename (product name from `asset_info.jsonl` plus `.unitypackage`, or `{id}.unitypackage` if the name is missing), a one-line progress bar, and `Download complete: …`. Skips if the file is already present (`Exists, skipped: …`). Prompt: `Enter asset ID (Enter = cancel, . = open):` — **`.`** opens `download_dir` in the system file manager.  
 - **Extract assets** — Lists `*.unitypackage` files under `download_dir` with a numeric **index** (1…N). Extraction uses **`tarsafe`** to read the package (same on-disk format as the [unitypackage-extractor](https://pypi.org/project/unitypackage-extractor/) project) but implemented in-app: one **progress line** (`Extracting i/total (pct%)`) and a single result line `Extracted N file(s) to: <path>`. Output goes to **`extracts/<package-stem>/`** next to **`downloads/`** (sibling folders). Prompt: `Enter asset index (Enter = cancel, . = open):` — **`.`** opens the **`extracts/`** folder (next to `download_dir`). If there are no packages, you still get this prompt so you can open **`extracts/`**.
 - **Extract assets** — Lists `*.unitypackage` files under `download_dir` with a numeric **index** (1…N). Extraction uses **`tarsafe`** to read the package (same on-disk format as the [unitypackage-extractor](https://pypi.org/project/unitypackage-extractor/) project) but implemented in-app: one **progress line** (`Extracting i/total (pct%)`) and a single result line `Extracted N file(s) to: <path>`. Output goes to **`extracts/<package-stem>/`** next to **`downloads/`** (sibling folders). Prompt: `Enter asset index (Enter = cancel, . = open):` — **`.`** opens the **`extracts/`** folder (next to `download_dir`). If there are no packages, you still get this prompt so you can open **`extracts/`**.
+- **Account settings** — Switch the active account or choose **2. Enter cookie** to paste a new cookie header for the currently active account. The updated cookie is saved to `config.json`.
 - **Menu** — Repeats after each action. **Ctrl+C** exits; there is no separate “quit” command.
 - **Resume / retry** — Downloads can resume via `.tmp` files and `Range` requests; fetches skip existing JSONL rows; HTTP errors retry with backoff.
 
@@ -54,7 +55,7 @@ Installs **`requests`** (API and downloads) and **`unitypackage-extractor`** as 
 
 ### Multiple accounts
 
-To add multiple cookies, add more entries to `accounts`. When there are 2+ accounts, the main menu shows **0. Account Settings** where you can switch the active account; the selection is saved back to `config.json`.
+To add multiple cookies, add more entries to `accounts`. The main menu shows **1. Account settings** where you can switch the active account; the selection is saved back to `config.json`. In Account settings, choose **2. Enter cookie** to paste a cookie header for the currently active account and save it to `config.json`.
 
 Legacy configs that only have a top-level `cookie` field are still supported (treated as a single account).
 
@@ -68,9 +69,10 @@ python asset_store_download.py
 
 | # | Action |
 | --- | --- |
-| **1** | **Search assets** — Fetch library data if needed, then `Enter search query (Enter = full list):` — matching IDs/names, or full list if you press Enter only. |
-| **2** | **Download assets** — `Enter asset ID (Enter = cancel, . = open):` — download one package, or **`.`** to open `download_dir`. |
-| **3** | **Extract assets** — List packages in `download_dir`, then `Enter asset index (Enter = cancel, . = open):` — unpack into `extracts/…`, or **`.`** to open the `extracts/` folder. |
+| **1** | **Account settings** — Switch accounts or choose **2. Enter cookie** to save a pasted cookie header to the active account in `config.json`. |
+| **2** | **Search assets** — Fetch library data automatically, then `Enter search query (Enter = full list):` — matching IDs/names, or full list if you press Enter only. |
+| **3** | **Download assets** — `Enter asset ID (Enter = cancel, . = open):` — download one package, or **`.`** to open `download_dir`. |
+| **4** | **Extract assets** — List packages in `download_dir`, then `Enter asset index (Enter = cancel, . = open):` — unpack into `extracts/…`, or **`.`** to open the `extracts/` folder. |
 
 Wrong menu choice shows `Invalid choice` (with a blank line before the menu repeats). For **Download assets**, `Enter` alone cancels; other non-numeric input (except **`.`**) returns to the menu without a message.
 

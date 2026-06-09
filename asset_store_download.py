@@ -253,6 +253,18 @@ fragment reviews on Reviews {
 
 # endregion
 
+# region UI
+
+
+def clear_view():
+    if not sys.stdout.isatty():
+        return
+    command = "cls" if os.name == "nt" else "clear"
+    subprocess.run(command, shell=True, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+# endregion
+
 # region Library Fetch
 
 def load_config(path="config.json"):
@@ -277,6 +289,16 @@ def save_active_account(active_account, path="config.json"):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(raw, f, ensure_ascii=False, indent=2)
         f.write("\n")
+
+
+def save_active_account_cookie(config, cookie, path="config.json"):
+    config = normalize_config(config)
+    active = config.get("active_account")
+    for acc in config.get("accounts", []):
+        if acc.get("name") == active:
+            acc["cookie"] = str(cookie or "").strip()
+            break
+    save_config(config, path=path)
 
 
 def normalize_config(config):
@@ -608,7 +630,54 @@ def parse_filename(response, asset_id):
     return f"{asset_id}.unitypackage"
 
 
-def download_asset(asset_id, config, download_dir, total_size=0):
+def safe_package_filename(asset_name, asset_id):
+    name = str(asset_name or "").strip()
+    if name.lower().endswith(".unitypackage"):
+        name = name[: -len(".unitypackage")]
+    if not name:
+        name = str(asset_id)
+
+    name = name.replace("/", "_").replace("\\", "_")
+    name = re.sub(r'[\x00-\x1f<>:"|?*]', "_", name)
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    if not name:
+        name = str(asset_id)
+
+    # Avoid Windows reserved device names even when running on other platforms.
+    if name.upper() in {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+    }:
+        name = f"{name}_{asset_id}"
+
+    return f"{name[:220]}.unitypackage"
+
+
+def _desired_filename_for_asset(asset_id, info_map):
+    return safe_package_filename(info_map.get(asset_id, {}).get("name", ""), asset_id)
+
+
+def download_asset(asset_id, config, download_dir, total_size=0, desired_filename=None):
     url = f"{DOWNLOAD_URL}/{asset_id}"
     headers = {
         **COMMON_HEADERS,
@@ -631,6 +700,15 @@ def download_asset(asset_id, config, download_dir, total_size=0):
         if cached_filename:
             filepath = download_dir / cached_filename
             if filepath.exists():
+                if desired_filename and cached_filename != desired_filename:
+                    desired_path = download_dir / desired_filename
+                    if not desired_path.exists():
+                        filepath.rename(desired_path)
+                    meta_path.write_text(
+                        json.dumps({"filename": desired_filename}, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    return asset_id, True, t("exists_skip").format(desired_filename)
                 return asset_id, True, t("exists_skip").format(cached_filename)
 
     for attempt in range(1, retry + 1):
@@ -662,7 +740,7 @@ def download_asset(asset_id, config, download_dir, total_size=0):
                 return asset_id, False, t("not_found")
 
             if resp.status_code == 416:
-                filename = parse_filename(resp, asset_id)
+                filename = desired_filename or parse_filename(resp, asset_id)
                 filepath = download_dir / filename
                 if tmp_path and tmp_path.exists():
                     tmp_path.rename(filepath)
@@ -670,7 +748,7 @@ def download_asset(asset_id, config, download_dir, total_size=0):
 
             resp.raise_for_status()
 
-            filename = parse_filename(resp, asset_id)
+            filename = desired_filename or parse_filename(resp, asset_id)
             filepath = download_dir / filename
 
             meta_path.write_text(
@@ -753,6 +831,7 @@ def _pre_check_downloads(asset_ids, download_dir, cache_dir, info_map):
     for aid in asset_ids:
         meta_path = cache_dir / f"{aid}.meta"
         info = info_map.get(aid, {})
+        desired_filename = _desired_filename_for_asset(aid, info_map)
 
         if meta_path.exists():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -760,11 +839,33 @@ def _pre_check_downloads(asset_ids, download_dir, cache_dir, info_map):
             if cached_filename:
                 filepath = download_dir / cached_filename
                 if filepath.exists():
-                    skipped.append((aid, cached_filename))
+                    if cached_filename != desired_filename:
+                        desired_path = download_dir / desired_filename
+                        if not desired_path.exists():
+                            filepath.rename(desired_path)
+                            local_files.pop(cached_filename.lower(), None)
+                            local_files[desired_filename.lower()] = desired_path
+                        meta_path.write_text(
+                            json.dumps({"filename": desired_filename}, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                        skipped.append((aid, desired_filename))
+                    else:
+                        skipped.append((aid, cached_filename))
                     continue
 
         product_name = info.get("name", "")
         if product_name:
+            desired_lower = desired_filename.lower()
+            if desired_lower in local_files:
+                fpath = local_files[desired_lower]
+                meta_path.write_text(
+                    json.dumps({"filename": fpath.name}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                skipped.append((aid, fpath.name))
+                continue
+
             name_lower = product_name.lower()
             for fname_lower, fpath in local_files.items():
                 if name_lower in fname_lower:
@@ -783,10 +884,7 @@ def _pre_check_downloads(asset_ids, download_dir, cache_dir, info_map):
 
 
 def _pending_display_filename(asset_id, info_map):
-    name = (info_map.get(asset_id, {}).get("name") or "").strip()
-    if name:
-        return f"{name}.unitypackage"
-    return f"{asset_id}.unitypackage"
+    return _desired_filename_for_asset(asset_id, info_map)
 
 
 def _display_download_dir(path: Path) -> str:
@@ -887,17 +985,16 @@ def list_assets_id_name(config=None):
 
 
 def search_assets_by_query(config):
+    clear_view()
     _, info_path, _ = account_data_paths(config)
+    ok = run_fetch_list(config)
     info_map = load_info_map(info_path)
+    if not ok and not info_map:
+        print(t("no_asset_info"))
+        return
     if not info_map:
-        ok = run_fetch_list(config)
-        if not ok:
-            print(t("no_asset_info"))
-            return
-        info_map = load_info_map(info_path)
-        if not info_map:
-            print(t("no_asset_info"))
-            return
+        print(t("no_asset_info"))
+        return
 
     def sort_key(pid):
         try:
@@ -905,40 +1002,32 @@ def search_assets_by_query(config):
         except ValueError:
             return (1, pid)
 
-    while True:
-        raw = input(t("enter_search_query")).strip()
-        if raw == ".":
-            run_fetch_list(config)
-            info_map = load_info_map(info_path)
-            if not info_map:
-                print(t("no_asset_info"))
-            continue
-        if not raw:
-            print()
-            list_assets_id_name(config)
-            return
-
-        needle = raw.lower()
-
-        matched = []
-        for pid, info in info_map.items():
-            name = (info.get("name") or "").lower()
-            pid_str = str(pid)
-            if needle in name or needle in pid_str.lower():
-                matched.append(pid)
-
-        matched.sort(key=sort_key)
-        if not matched:
-            print()
-            print(t("search_no_results"))
-            return
-
+    raw = input(t("enter_search_query")).strip()
+    if not raw:
         print()
-        id_width = max(len(str(pid)) for pid in matched)
-        for pid in matched:
-            name = info_map[pid].get("name", "")
-            print(f"  {pid:>{id_width}}  {name}")
+        list_assets_id_name(config)
         return
+
+    needle = raw.lower()
+
+    matched = []
+    for pid, info in info_map.items():
+        name = (info.get("name") or "").lower()
+        pid_str = str(pid)
+        if needle in name or needle in pid_str.lower():
+            matched.append(pid)
+
+    matched.sort(key=sort_key)
+    if not matched:
+        print()
+        print(t("search_no_results"))
+        return
+
+    print()
+    id_width = max(len(str(pid)) for pid in matched)
+    for pid in matched:
+        name = info_map[pid].get("name", "")
+        print(f"  {pid:>{id_width}}  {name}")
 
 
 def download_single_by_id(config, asset_id_str):
@@ -968,12 +1057,14 @@ def download_single_by_id(config, asset_id_str):
         return
 
     aid = pending_ids[0]
-    print(t("pending_download").format(_pending_display_filename(aid, info_map)))
+    desired_filename = _pending_display_filename(aid, info_map)
+    print(t("pending_download").format(desired_filename))
     asset_id, ok, msg = download_asset(
         aid,
         config,
         download_dir,
         info_map.get(aid, {}).get("size", 0),
+        desired_filename=desired_filename,
     )
     with _print_lock:
         if not ok:
@@ -1041,7 +1132,7 @@ def _extract_unitypackage_with_progress(package_path, output_path, encoding="utf
 
 
 def extract_assets_menu(config):
-    print()
+    clear_view()
     download_dir, _ = _prepare_download_environment(config)
     download_dir = download_dir.resolve()
     extract_root = download_dir.parent / "extracts"
@@ -1245,41 +1336,79 @@ def run_fetch_list(config, detail_batch_size=100):
 
 def account_settings_menu(config, config_path="config.json"):
     config = normalize_config(config)
-    accounts = config.get("accounts", [])
-    if len(accounts) < 2:
-        return config
 
-    print()
-    print(t("account_settings_title"))
-    print("=" * 40)
+    while True:
+        config = normalize_config(config)
+        accounts = config.get("accounts", [])
+        active = config.get("active_account")
 
-    active = config.get("active_account")
-    w = len(str(len(accounts)))
-    for i, acc in enumerate(accounts, start=1):
-        name = acc.get("name", "")
-        tag = " (active)" if name == active else ""
-        print(f"  {i:>{w}}. {name}{tag}")
-
-    print()
-    raw = input(t("account_choose")).strip()
-    if raw == "":
-        return config
-    if not raw.isdigit():
-        print(t("invalid_account_choice"))
+        clear_view()
+        print(t("account_settings_title"))
+        print("=" * 40)
+        print(t("active_account").format(active))
+        switch_label = t("account_switch")
+        if len(accounts) > 1:
+            switch_label = f"{switch_label} ({active})"
+        print(switch_label)
+        print(t("account_enter_cookie"))
         print()
-        return config
 
-    idx = int(raw)
-    if idx < 1 or idx > len(accounts):
-        print(t("invalid_account_choice"))
-        print()
-        return config
+        raw = input(t("account_settings_choose")).strip()
+        if raw == "":
+            return config
+        if raw == "2":
+            clear_view()
+            cookie = input(t("enter_cookie").format(active)).strip()
+            if cookie:
+                save_active_account_cookie(config, cookie, path=config_path)
+                config = load_config(config_path)
+                print(t("cookie_saved").format(active))
+                print()
+                input(t("press_enter_continue"))
+            continue
+        if raw != "1":
+            print(t("invalid_account_choice"))
+            print()
+            input(t("press_enter_continue"))
+            continue
 
-    selected_name = accounts[idx - 1].get("name", "")
-    if selected_name and selected_name != active:
-        config["active_account"] = selected_name
-        save_active_account(selected_name, path=config_path)
-    return normalize_config(config)
+        while True:
+            config = normalize_config(config)
+            accounts = config.get("accounts", [])
+            active = config.get("active_account")
+
+            clear_view()
+            print(t("switch_account_title"))
+            print("=" * 40)
+            w = len(str(len(accounts)))
+            for i, acc in enumerate(accounts, start=1):
+                name = acc.get("name", "")
+                tag = " (active)" if name == active else ""
+                print(f"  {i:>{w}}. {name}{tag}")
+
+            print()
+            raw = input(t("account_choose")).strip()
+            if raw == "":
+                break
+            if not raw.isdigit():
+                print(t("invalid_account_choice"))
+                print()
+                input(t("press_enter_continue"))
+                continue
+
+            idx = int(raw)
+            if idx < 1 or idx > len(accounts):
+                print(t("invalid_account_choice"))
+                print()
+                input(t("press_enter_continue"))
+                continue
+
+            selected_name = accounts[idx - 1].get("name", "")
+            if selected_name and selected_name != active:
+                config["active_account"] = selected_name
+                save_active_account(selected_name, path=config_path)
+                config = load_config(config_path)
+            break
 
 
 def main():
@@ -1288,8 +1417,9 @@ def main():
     while True:
         config = load_config(config_path)
         accounts = config.get("accounts", [])
-        has_account_settings = len(accounts) >= 2
+        has_account_settings = len(accounts) >= 1
 
+        clear_view()
         print(t("title"))
         print("=" * 40)
         if has_account_settings:
@@ -1304,12 +1434,13 @@ def main():
         # Re-read config before executing actions so runtime edits are respected.
         config = load_config(config_path)
 
-        if has_account_settings and choice == "0":
+        if has_account_settings and choice == "1":
             config = account_settings_menu(config, config_path=config_path)
-        elif choice == "1":
+        elif choice == ("2" if has_account_settings else "1"):
             search_assets_by_query(config)
             print()
-        elif choice == "2":
+        elif choice == ("3" if has_account_settings else "2"):
+            clear_view()
             raw = input(t("enter_asset_id")).strip()
             if raw == ".":
                 download_dir, _ = _prepare_download_environment(config)
@@ -1317,7 +1448,7 @@ def main():
             elif raw:
                 download_single_by_id(config, raw)
             print()
-        elif choice == "3":
+        elif choice == ("4" if has_account_settings else "3"):
             extract_assets_menu(config)
             print()
         else:
